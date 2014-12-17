@@ -4,20 +4,31 @@
 // ubus is designed to exchange information between 2 CPU or 2 hosts,
 // each connected on the same UART(RS232) connection. 
 //
+// Actual use case: C285 DM368<-->NUC100, C285 DM368 <--> factory test program.
+//
 // The data are not limited in size. The actual transfer is like IP datagram,
-// which all data are split into fix-sized packets.
+// which splits data into fix-sized packets.
 //
 // Error detection/handling is done by CRC checksum. On data corruption, the sender
-// is expected to re-send another request when timeout occurs waiting for reply.
+// is expected to re-send the request (with different sequence number) when timeout
+// occurs waiting for reply.
 //
 // This error handling is expected to withstand line noise, such as other debug 
 // messages flowing on the UART bus, which is typical case in embedded SoC.
 //
 // It is possible where each end has more than one logical component 
-// sending/receiving packets. This scenario supports multiple logical bus
-// using the same UART connection. To acheive this, each logical components
-// must identify the other using sender_id and reciever_id in the ubus_init().
+// sending/receiving packets. This scenario supports multiple logical bus 
+// (we call "pipes")using the same UART connection. To acheive this, 
+// each logical components must identify the other using sender_id and reciever_id.
 //
+//
+// Deliverables:
+// 1. test code: sender and receiver
+// 2. documentation and diagrams
+// 3. library itself
+//
+// TODO:
+// 1. packetization to support large(>17bytes) data transfer
 //
 
 #include <stdint.h>
@@ -27,8 +38,9 @@
 extern "C" {
 #endif
 
-#define MAX_CMD_PAYLOAD_LEN (17)
-#define MAX_REPLY_PAYLOAD_LEN (16)
+typedef void * ubus; 
+typedef void * ubus_mpipe; // master pipe
+typedef void * ubus_spipe; // slave pipe
 
 typedef struct _ubus_cmd_t
 {
@@ -45,17 +57,46 @@ typedef struct _ubus_reply_t
     int         data_length;
 } ubus_reply_t;
 
-typedef void * ubus_t;
+typedef struct _packet_signature_t
+{
+    uint8_t     start_byte_0;
+    uint8_t     start_byte_1;
+    uint8_t     stop_byte;
+} packet_sig_t;
 
-int ubus_init(ubus_t *pbus, uint16_t sender_id, uint16_t receiver_id, char *uart_device, int baudrate);
-void ubus_exit(ubus_t bus);
+int ubus_bus_init(ubus *pbus, char *uart_device, int baudrate);
+void ubus_bus_exit(ubus bus);
 
-// synchronous version of command-reply handling
-int ubus_send_cmd(ubus_t bus, const ubus_request_t *request, ubus_reply_t *reply);
+// create and delete master-side pipe
+ubus_mpipe * ubus_master_pipe_new(ubus bus, packet_sig_t request_sig, packet_sig_t reply_sig);
+void ubus_master_pipe_del(ubus_mpipe pipe);
 
-// asynchronous version of command-reply handling
-int ubus_queue_cmd(ubus_t bus, const ubus_request_t *request);
-int ubus_wait_reply(ubus_t bus, const ubus_request_t *request, ubus_reply_t *reply);
+// create and delete slave-side pipe
+ubus_spipe * ubus_slave_pipe_new(ubus bus, packet_sig_t request_sig, packet_sig_t reply_sig);
+void ubus_slave_pipe_del(ubus_spipe pipe);
+
+// Master side: send request and wait for reply
+int ubus_master_send(ubus_mpipe pipe, const ubus_request_t *request);
+int ubus_master_recv(ubus_mpipe pipe, ubus_reply_t *reply);
+
+// Slave side: receive request, process request and send reply
+int ubus_slave_recv(ubus_spipe pipe, ubus_request_t *request);
+int ubus_slave_send(ubus_spipe pipe, const ubus_reply_t *reply);
+
+// legacy master/slave id used in C285 project.
+// DO NOT re-use in other projects unless for compatibility.
+
+#define DM368_2_FAC_MASTER_ID       (0x00026106)
+#define DM368_2_FAC_SLAVE_ID        (0x00036207)
+
+#define FAC_2_DM368_MASTER_ID       (0x00046308)
+#define FAC_2_DM368_SLAVE_ID        (0x00056409)
+
+#define DM368_2_NUC100_MASTER_ID    (0x0044544F)
+#define DM368_2_NUC100_SLAVE_ID     (0x004D5952)
+
+#define NUC100_2_DM368_MASTER_ID    (0x00435350)
+#define NUC100_2_DM368_SLAVE_ID     (0x00554C45)
 
 //C++ guard
 #ifdef __cplusplus
