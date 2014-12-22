@@ -76,27 +76,26 @@ ubus_spipe * ubus_slave_pipe_new(ubus bus, packet_sig_t request_sig, packet_sig_
 void ubus_slave_pipe_del(ubus_spipe pipe);
 
 // Master side: send request and wait for reply
-int ubus_master_send(ubus_mpipe pipe, const ubus_request_t *request);
-int ubus_master_recv(ubus_mpipe pipe, ubus_reply_t *reply);
+int ubus_master_send_recv(ubus_mpipe pipe, const ubus_request_t *request, ubus_reply_t *reply);
 
 // Slave side: receive request, process request and send reply
 int ubus_slave_recv(ubus_spipe pipe, ubus_request_t *request);
 int ubus_slave_send(ubus_spipe pipe, const ubus_reply_t *reply);
 
 // legacy master/slave id used in C285 project.
-// DO NOT re-use in other projects unless for compatibility.
+// DO NOT re-use in non-related projects unless for compatibility.
 
-#define DM368_2_FAC_MASTER_ID       (0x00026106)
-#define DM368_2_FAC_SLAVE_ID        (0x00036207)
+extern packet_sig_t DM368_2_FAC_REQUEST_SIG;
+extern packet_sig_t DM368_2_FAC_REPLY_SIG;
 
-#define FAC_2_DM368_MASTER_ID       (0x00046308)
-#define FAC_2_DM368_SLAVE_ID        (0x00056409)
+extern packet_sig_t FAC_2_DM368_REQUEST_SIG;
+extern packet_sig_t FAC_2_DM368_REPLY_SIG;
 
-#define DM368_2_NUC100_MASTER_ID    (0x0044544F)
-#define DM368_2_NUC100_SLAVE_ID     (0x004D5952)
+extern packet_sig_t DM368_2_NUC100_REQUEST_SIG;
+extern packet_sig_t DM368_2_NUC100_REPLY_SIG;
 
-#define NUC100_2_DM368_MASTER_ID    (0x00435350)
-#define NUC100_2_DM368_SLAVE_ID     (0x00554C45)
+extern packet_sig_t NUC100_2_DM368_REQUEST_SIG;
+extern packet_sig_t NUC100_2_DM368_REPLY_SIG;
 
 //C++ guard
 #ifdef __cplusplus
