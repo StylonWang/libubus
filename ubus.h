@@ -45,15 +45,22 @@ typedef void * ubus_spipe; // slave pipe
 typedef struct _ubus_cmd_t
 {
     uint8_t     command;
-    uint8_t     *data;
+    uint8_t     data[255];
     int         data_length;
 } ubus_request_t;
+
+typedef enum {
+    UBUS_STATE_OK = 0,
+    UBUS_STATE_UNKNOWN_COMMAND,
+    UBUS_STATE_CRC_ERROR,
+    UBUS_STATE_BUSY,
+} ubus_reply_state;
 
 typedef struct _ubus_reply_t
 {
     uint8_t     command;
-    uint8_t     state;
-    uint8_t     *data;
+    ubus_reply_state state;
+    uint8_t     data[255];
     int         data_length;
 } ubus_reply_t;
 
@@ -68,18 +75,18 @@ int ubus_bus_init(ubus *pbus, char *uart_device, int baudrate);
 void ubus_bus_exit(ubus bus);
 
 // create and delete master-side pipe
-ubus_mpipe * ubus_master_pipe_new(ubus bus, packet_sig_t request_sig, packet_sig_t reply_sig);
+ubus_mpipe ubus_master_pipe_new(ubus bus, packet_sig_t request_sig, packet_sig_t reply_sig);
 void ubus_master_pipe_del(ubus_mpipe pipe);
 
 // create and delete slave-side pipe
-ubus_spipe * ubus_slave_pipe_new(ubus bus, packet_sig_t request_sig, packet_sig_t reply_sig);
+ubus_spipe ubus_slave_pipe_new(ubus bus, packet_sig_t request_sig, packet_sig_t reply_sig);
 void ubus_slave_pipe_del(ubus_spipe pipe);
 
 // Master side: send request and wait for reply
 int ubus_master_send_recv(ubus_mpipe pipe, const ubus_request_t *request, ubus_reply_t *reply);
 
 // Slave side: receive request, process request and send reply
-int ubus_slave_recv(ubus_spipe pipe, ubus_request_t *request);
+int ubus_slave_recv(ubus_spipe pipe, ubus_request_t *request, int timeout_sec);
 int ubus_slave_send(ubus_spipe pipe, const ubus_reply_t *reply);
 
 // legacy master/slave id used in C285 project.
