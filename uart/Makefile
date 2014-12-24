@@ -1,6 +1,7 @@
 CC=gcc
 CFLAGS=-Wall
-CROSS_CC=arm-none-linux-gnueabi-gcc
+#CROSS_CC=arm-none-linux-gnueabi-gcc
+CROSS_CC=arm-linux-gnueabihf-gcc-4.7
 
 default:: sender receiver sender.arm receiver.arm
 
