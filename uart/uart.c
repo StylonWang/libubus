@@ -5,13 +5,14 @@ static int ubus_uart_init(char *uart_device, int baud_rate)
     int fd;
 
     fd = open(uart_device, O_RDWR | O_NOCTTY | O_NDELAY);
+    LOG_DBG("tty device opened\n");
 
     if (fd < 0) {
         LOG_ERR("unable to init uart port: %s\n", strerror(errno));
         return -1;
     }
 
-    if (fcntl(fd, F_SETFL, 0) < 0) {
+    if (fcntl(fd, F_SETFL, 0) < 0) { // return to blocking mode
         LOG_ERR("fcntl failed: %s\n", strerror(errno));
         close(fd);
         return -1;
@@ -31,28 +32,29 @@ static int ubus_uart_init(char *uart_device, int baud_rate)
     switch (baud_rate) {
     case 9600:
         cfsetispeed(&newtio, B9600);
-        //cfsetospeed(&newtio, B9600);
+        cfsetospeed(&newtio, B9600);
         break;
     case 19200:
         cfsetispeed(&newtio, B19200);
-        //cfsetospeed(&newtio, B19200);
+        cfsetospeed(&newtio, B19200);
         break;
     case 38400:
         cfsetispeed(&newtio, B38400);
-        //cfsetospeed(&newtio, B38400);
+        cfsetospeed(&newtio, B38400);
         break;
     case 57600:
         cfsetispeed(&newtio, B57600);
-        //cfsetospeed(&newtio, B57600);
+        cfsetospeed(&newtio, B57600);
         break;
     case 115200:
         cfsetispeed(&newtio, B115200);
-        //cfsetospeed(&newtio, B115200);
+        cfsetospeed(&newtio, B115200);
         break;
     default:
         break;
     }
 
+#if 1
     newtio.c_cc[VTIME] = 10;     /* inter-character timer in deciseconds */
     newtio.c_cc[VMIN] = 0;      /* blocking read until n chars received */
 
@@ -72,10 +74,10 @@ static int ubus_uart_init(char *uart_device, int baud_rate)
     if(newtio.c_iflag | (IXANY)) {
         fprintf(stderr, "IXANY...\n");
     }
-
+#endif
 //    tcflush(fd, TCIOFLUSH);
     if (tcsetattr(fd, TCSANOW, &newtio) < 0) {
-        LOG_ERR("tcgetattr failed: %s\n", strerror(errno));
+        LOG_ERR("tcsetattr failed: %s\n", strerror(errno));
         close(fd);
         return -1;
     }
