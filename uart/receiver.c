@@ -48,7 +48,7 @@ int main(int argc, char **argv)
     fprintf(stderr, "Start receiving\n");
     while (1) {
         unsigned char c[4];
-        int ret;
+        //int ret;
         fd_set readfs;
         struct timeval timeout;
         
@@ -78,7 +78,7 @@ int main(int argc, char **argv)
         }
         else {
             int i=0;
-            fprintf(stderr, "Got(%d) ", s);
+            fprintf(stderr, "Got(%d) ", (int)s);
             for(i=0; i<s; ++i) {
                 fprintf(stderr, "%d ", c[i]);
             }
