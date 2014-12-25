@@ -228,7 +228,7 @@ static int ubus_uart_init(char *uart_device, int baud_rate, struct termios *oldt
     }
 
     newtio.c_cc[VTIME] = 10;     /* inter-character timer in deciseconds */
-    newtio.c_cc[VMIN] = 0;      /* blocking read until n chars received */
+    newtio.c_cc[VMIN] = EXPECTED_PACK_SIZE;      /* blocking read until n chars received */
 
     //newtio.c_cflag &= ~(CSIZE | CSTOPB | PARENB | CRTSCTS);
     newtio.c_cflag &= ~(CSIZE | CSTOPB | PARENB | CRTSCTS);

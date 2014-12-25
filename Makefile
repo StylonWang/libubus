@@ -3,8 +3,8 @@ CROSS_COMPILE=
 CC=$(CROSS_COMPILE)gcc
 CFLAGS=-Wall
 LDFLAGS=-lpthread
-#CROSS_CC=arm-none-linux-gnueabi-gcc
-CROSS_CC=arm-linux-gnueabihf-gcc-4.7
+CROSS_CC=arm-none-linux-gnueabi-gcc
+#CROSS_CC=arm-linux-gnueabihf-gcc-4.7
 
 default:: libubus.so libubus-arm.so test_master test_slave test_slave.arm test_master.arm
 
@@ -22,12 +22,12 @@ test_slave:: test_slave.c libubus.so
 
 test_slave.arm:: test_slave.c ubus.c
 	$(CROSS_CC) $(CFLAGS)  -o test_slave.arm $^ $(LDFLAGS)
-	scp test_slave.arm bananapi@10.1.9.94:/home/bananapi/tmp/.
+	scp test_slave.arm bananapi@stylon-bpi2.local:/home/bananapi/tmp/.
 
 test_master.arm:: test_master.c ubus.c
 	$(CROSS_CC) $(CFLAGS)  -o test_master.arm $^ $(LDFLAGS)
-	scp test_master.arm bananapi@10.1.9.94:/home/bananapi/tmp/.
+	scp test_master.arm bananapi@stylon-bpi2.local:/home/bananapi/tmp/.
 	
 clean::
-	rm -f libubus.so libubus-arm.so test_master test_slave test_slave.arm
+	rm -f libubus.so libubus-arm.so test_master test_slave test_slave.arm test_master.arm
 
