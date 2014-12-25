@@ -154,6 +154,13 @@ typedef struct _ubus_bus_t
      
 } ubus_bus_t;
 
+
+enum {
+    UBUS_DISPATCH_OK = 0,
+    UBUS_DISPATCH_CRC_ERR = -1,
+    UBUS_DISPATCH_INVALID = -2,
+};
+
 // debug log
 #define LOG_ERR(fmt, args...) do { fprintf(stderr, "[%s:%d]"fmt, __FUNCTION__, __LINE__,##args); } while(0)
 #define LOG_DBG(fmt, args...) do { fprintf(stderr, "[%s:%d]"fmt, __FUNCTION__, __LINE__, ##args); } while(0)
@@ -226,7 +233,7 @@ static int ubus_uart_init(char *uart_device, int baud_rate, struct termios *oldt
     //newtio.c_cflag &= ~(CSIZE | CSTOPB | PARENB | CRTSCTS);
     newtio.c_cflag &= ~(CSIZE | CSTOPB | PARENB | CRTSCTS);
     //newtio.c_cflag |= CS8 | CLOCAL;
-    newtio.c_cflag |= CS8;
+    newtio.c_cflag |= CS8 | CLOCAL | CREAD;
 
     //newtio.c_iflag &= ~(IXON | IXOFF |IXANY);
     //newtio.c_iflag |= IXANY;
@@ -236,6 +243,8 @@ static int ubus_uart_init(char *uart_device, int baud_rate, struct termios *oldt
         close(fd);
         return -1;
     }
+
+	tcflush(fd, TCIOFLUSH);
 
     return fd;
 }
@@ -344,7 +353,7 @@ static int ubus_mpipe_recv_reply(ubus_mpipe_t *pipe, const UART_REPLY *reply)
 
     if(ubus_check_reply_crc(reply)<0) {
         LOG_ERR("reply crc error\n");
-        return -1;
+        return UBUS_DISPATCH_CRC_ERR;
     }
 
     pthread_mutex_lock(&pipe->pipe_lock);
@@ -357,7 +366,7 @@ static int ubus_mpipe_recv_reply(ubus_mpipe_t *pipe, const UART_REPLY *reply)
 
     pthread_mutex_unlock(&pipe->pipe_lock);
 
-    return 0;
+    return UBUS_DISPATCH_OK;
 }
 
 static int ubus_spipe_recv_request(ubus_spipe_t *pipe, const UART_REQUEST *request)
@@ -369,7 +378,7 @@ static int ubus_spipe_recv_request(ubus_spipe_t *pipe, const UART_REQUEST *reque
     if(ubus_check_request_crc(request)<0) {
         LOG_ERR("request crc error\n");
         // TODO: send back "CRC error" reply
-        return -1;
+        return UBUS_DISPATCH_CRC_ERR;
     }
 
     pthread_mutex_lock(&pipe->pipe_lock);
@@ -379,7 +388,7 @@ static int ubus_spipe_recv_request(ubus_spipe_t *pipe, const UART_REQUEST *reque
     pthread_cond_signal(&pipe->request_cond);
 
     pthread_mutex_unlock(&pipe->pipe_lock);
-    return 0;
+    return UBUS_DISPATCH_OK;
 }
 
 // currently only handle one request/reply.
@@ -419,20 +428,32 @@ static int ubus_dispatch_data_1(ubus_bus_t *bus_obj, void *data, int data_len)
                 reply->STOP_BYTE
                 );
 
-    return -1;
+    return UBUS_DISPATCH_INVALID; 
 }
 
 static int ubus_dispatch_data(ubus_bus_t *bus_obj)
 {
     int i=0;
+    int ret = UBUS_DISPATCH_OK;
+
     while(bus_obj->data_length >= EXPECTED_PACK_SIZE) {
 
         LOG_DBG("try to dispatch %d\n", i++);
-        ubus_dispatch_data_1(bus_obj, bus_obj->data_queue, EXPECTED_PACK_SIZE);
-        memmove(bus_obj->data_queue, bus_obj->data_queue+EXPECTED_PACK_SIZE, EXPECTED_PACK_SIZE);
-        bus_obj->data_length -= EXPECTED_PACK_SIZE;
+        ret = ubus_dispatch_data_1(bus_obj, bus_obj->data_queue, EXPECTED_PACK_SIZE);
+        
+        if(UBUS_DISPATCH_INVALID==ret) {
+            // need optimization
+            memmove(bus_obj->data_queue, bus_obj->data_queue+1, bus_obj->data_length-1);
+            bus_obj->data_length -= 1;
+        }
+        else if(UBUS_DISPATCH_CRC_ERR==ret ||
+                UBUS_DISPATCH_OK==ret) {
+            memmove(bus_obj->data_queue, bus_obj->data_queue+EXPECTED_PACK_SIZE,
+                    bus_obj->data_length-EXPECTED_PACK_SIZE);
+            bus_obj->data_length -= EXPECTED_PACK_SIZE;
+        }
     }
-    return 0;
+    return ret;
 }
 
 
@@ -477,6 +498,7 @@ static void *ubus_thread_routine(void *data)
             //LOG_DBG("got %d bytes\n", (int)read_bytes);
             memcpy(bus_obj->data_queue+bus_obj->data_length, (void *)&u, read_bytes);
             bus_obj->data_length += read_bytes;
+            LOG_DBG("got %d, have %d\n", (int)read_bytes, (int)bus_obj->data_length);
         }
 
         ubus_dispatch_data(bus_obj);
@@ -909,6 +931,7 @@ int ubus_slave_recv(ubus_spipe p, ubus_request_t *request, int timeout_sec)
     if(pipe->request_received) {
         ubus_spipe_generate_request(bus_obj, pipe, request, &pipe->request);
         result = 0;
+        pipe->request_received = false;
         goto done;
     }
 
@@ -919,6 +942,7 @@ int ubus_slave_recv(ubus_spipe p, ubus_request_t *request, int timeout_sec)
     pthread_cond_timedwait(&pipe->request_cond, &pipe->pipe_lock, &ts);
     if(pipe->request_received) {
         ubus_spipe_generate_request(bus_obj, pipe, request, &pipe->request);
+        pipe->request_received = false;
         result = 0;
     }
     else {
@@ -926,11 +950,11 @@ int ubus_slave_recv(ubus_spipe p, ubus_request_t *request, int timeout_sec)
         LOG_DBG("no request for now\n");
     }
 
+done:
     pthread_mutex_unlock(&pipe->pipe_lock);
     // exit critical section
     //----------------------------------
     
-done:
     return result;
 }
 

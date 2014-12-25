@@ -3,7 +3,8 @@ CROSS_COMPILE=
 CC=$(CROSS_COMPILE)gcc
 CFLAGS=-Wall
 LDFLAGS=-lpthread
-CROSS_CC=arm-none-linux-gnueabi-gcc
+#CROSS_CC=arm-none-linux-gnueabi-gcc
+CROSS_CC=arm-linux-gnueabihf-gcc-4.7
 
 default:: libubus.so libubus-arm.so test_master test_slave test_slave.arm test_master.arm
 
