@@ -48,7 +48,8 @@ int main(int argc, char **argv)
     fprintf(stderr, "Start receiving\n");
     while (1) {
         unsigned char c[4];
-        //int ret;
+#if 0
+        int ret;
         fd_set readfs;
         struct timeval timeout;
         
@@ -56,7 +57,6 @@ int main(int argc, char **argv)
 		timeout.tv_sec = 0; //50L;
 		FD_ZERO(&readfs);
 		FD_SET(fd, &readfs);
-#if 0
 		ret = select(fd + 1, &readfs, NULL, NULL, &timeout);
         if(ret<0 && errno!=EINTR) {
             LOG_ERR("select failed: %s\n", strerror(errno));
