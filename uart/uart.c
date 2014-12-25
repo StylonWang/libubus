@@ -55,27 +55,28 @@ static int ubus_uart_init(char *uart_device, int baud_rate)
     }
 
 #if 1
-    newtio.c_cc[VTIME] = 10;     /* inter-character timer in deciseconds */
+    newtio.c_cc[VTIME] = 5;     /* inter-character timer in deciseconds */
     newtio.c_cc[VMIN] = 0;      /* blocking read until n chars received */
 
     //newtio.c_cflag &= ~(CSIZE | CSTOPB | PARENB | CRTSCTS);
     newtio.c_cflag &= ~(CSIZE | CSTOPB | PARENB | CRTSCTS);
     //newtio.c_cflag |= CS8 | CLOCAL;
-    newtio.c_cflag |= CS8;
+    newtio.c_cflag |= CS8 | CLOCAL | CREAD;
+    newtio.c_iflag |= IGNPAR;
 
-    //newtio.c_iflag &= ~(IXON | IXOFF |IXANY);
+    //newtio.c_iflag &= ~(IXON | IXOFF);
     //newtio.c_iflag |= IXANY;
-    if(newtio.c_iflag | (IXON)) {
+    if(newtio.c_iflag & (IXON)) {
         fprintf(stderr, "IXON...\n");
     }
-    if(newtio.c_iflag | (IXOFF)) {
+    if(newtio.c_iflag & (IXOFF)) {
         fprintf(stderr, "IXOFF...\n");
     }
-    if(newtio.c_iflag | (IXANY)) {
+    if(newtio.c_iflag & (IXANY)) {
         fprintf(stderr, "IXANY...\n");
     }
 #endif
-//    tcflush(fd, TCIOFLUSH);
+    tcflush(fd, TCIOFLUSH);
     if (tcsetattr(fd, TCSANOW, &newtio) < 0) {
         LOG_ERR("tcsetattr failed: %s\n", strerror(errno));
         close(fd);

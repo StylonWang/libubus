@@ -48,6 +48,7 @@ int main(int argc, char **argv)
     fprintf(stderr, "Start receiving\n");
     while (1) {
         unsigned char c[4];
+        ssize_t s;
 #if 0
         int ret;
         fd_set readfs;
@@ -69,7 +70,8 @@ int main(int argc, char **argv)
 		}
 #endif
         // read from RS232
-        ssize_t s = read(fd, &c, sizeof(c));
+        memset(&c, 0, sizeof(c));
+        s = read(fd, &c, sizeof(c));
         if (s < 0) {
             fprintf(stderr, "error reading: %s\n", strerror(errno));
             exit(1);
