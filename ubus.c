@@ -40,6 +40,9 @@ packet_sig_t NUC100_2_DM368_REPLY_SIG = { 0x55, 0x4C, 0x45, };
 #define NUC100_2_DM368_SLAVE_ID     (0x00554C45)
 #endif 
 
+// timeout and try values
+#define REQUEST_RETRY_TIMES 3
+#define REPLY_TIMEOUT 2
 
 // -------------------------------------------
 // actual data layout in packets flowing on RS232
@@ -125,15 +128,11 @@ typedef struct _ubus_bus_t
     pthread_mutex_t fd_lock;
     int fd; // file descriptor to RS232 device
     unsigned long sequence; // transport sequence
+    struct termios oldtio;
 
-    // all packets received from RS232 are queued here for processing
-    struct {
-        bool in_use; //
-        union {
-            UART_REQUEST request;
-            UART_REPLY reply;
-        } u;
-    } packet_queue[MAX_PACKETS_IN_QUEUE];
+    // data received from RS232 are queued here for processing
+    uint8_t data_queue[EXPECTED_PACK_SIZE*MAX_PACKETS_IN_QUEUE];
+    int data_length;
 
     pthread_mutex_t queue_lock;
 
@@ -168,65 +167,79 @@ static int ubus_uart_init(char *uart_device, int baud_rate)
     //TODO
 }
 #else // TEST_MODE
-static int ubus_uart_init(char *uart_device, int baud_rate)
+static int ubus_uart_init(char *uart_device, int baud_rate, struct termios *oldtio)
 {
-    int fd;
     struct termios newtio;
+    int fd;
 
-	fd = open(uart_device, O_RDWR | O_NOCTTY | O_NDELAY);
+    fd = open(uart_device, O_RDWR | O_NOCTTY | O_NDELAY);
+    LOG_DBG("tty device opened\n");
 
-	if (fd < 0) {
+    if (fd < 0) {
         LOG_ERR("unable to init uart port: %s\n", strerror(errno));
         return -1;
-	}
+    }
 
-	if(fcntl(fd, F_SETFL, 0)<0) {
+    if (fcntl(fd, F_SETFL, 0) < 0) { // return to blocking mode
         LOG_ERR("fcntl failed: %s\n", strerror(errno));
         close(fd);
         return -1;
     }
 
-	tcflush(fd, TCIOFLUSH);
-	if (tcgetattr(fd, &newtio) < 0) {
+    if (tcgetattr(fd, &newtio) < 0) {
         LOG_ERR("tcgetattr failed: %s\n", strerror(errno));
-		close(fd);
+        close(fd);
         return -1;
-	}
-	cfmakeraw(&newtio);
-	switch(baud_rate) {
-		case 9600:
-			cfsetispeed(&newtio, B9600);
-			cfsetospeed(&newtio, B9600);
-			break;
-		case 19200:
-			cfsetispeed(&newtio, B19200);
-			cfsetospeed(&newtio, B19200);
-			break;
-		case 38400:
-			cfsetispeed(&newtio, B38400);
-			cfsetospeed(&newtio, B38400);
-			break;
-		case 57600:
-			cfsetispeed(&newtio, B57600);
-			cfsetospeed(&newtio, B57600);
-			break;
-		case 115200:
-			cfsetispeed(&newtio, B115200);
-			cfsetospeed(&newtio, B115200);
-			break;
-		default:
-			break;
-	}
-	if (tcsetattr(fd, TCSANOW, &newtio) < 0) {
-        LOG_ERR("tcgetattr failed: %s\n", strerror(errno));
-		close(fd);
-        return -1;
-	}
+    }
 
-	tcflush(fd, TCIOFLUSH);
+    *oldtio = newtio;
+
+    cfmakeraw(&newtio);
+    switch (baud_rate) {
+    case 9600:
+        cfsetispeed(&newtio, B9600);
+        cfsetospeed(&newtio, B9600);
+        break;
+    case 19200:
+        cfsetispeed(&newtio, B19200);
+        cfsetospeed(&newtio, B19200);
+        break;
+    case 38400:
+        cfsetispeed(&newtio, B38400);
+        cfsetospeed(&newtio, B38400);
+        break;
+    case 57600:
+        cfsetispeed(&newtio, B57600);
+        cfsetospeed(&newtio, B57600);
+        break;
+    case 115200:
+        cfsetispeed(&newtio, B115200);
+        cfsetospeed(&newtio, B115200);
+        break;
+    default:
+        break;
+    }
+
+    newtio.c_cc[VTIME] = 10;     /* inter-character timer in deciseconds */
+    newtio.c_cc[VMIN] = 0;      /* blocking read until n chars received */
+
+    //newtio.c_cflag &= ~(CSIZE | CSTOPB | PARENB | CRTSCTS);
+    newtio.c_cflag &= ~(CSIZE | CSTOPB | PARENB | CRTSCTS);
+    //newtio.c_cflag |= CS8 | CLOCAL;
+    newtio.c_cflag |= CS8;
+
+    //newtio.c_iflag &= ~(IXON | IXOFF |IXANY);
+    //newtio.c_iflag |= IXANY;
+    
+    if (tcsetattr(fd, TCSANOW, &newtio) < 0) {
+        LOG_ERR("tcsetattr failed: %s\n", strerror(errno));
+        close(fd);
+        return -1;
+    }
+
     return fd;
 }
-#endif
+#endif // TEST_MODE
 
 static unsigned int crc32_tab[] = {
 	0x00000000, 0x77073096, 0xee0e612c, 0x990951ba, 0x076dc419, 0x706af48f,
@@ -294,6 +307,12 @@ static int ubus_check_reply_crc(const UART_REPLY *reply)
     unsigned int crc32 = do_crc32(0, reply, sizeof(*reply)-sizeof(reply->CHECKSUM)-sizeof(reply->STOP_BYTE));
 
     if(crc32 != reply->CHECKSUM) {
+        LOG_ERR("crc should be 0x%x but get 0x%x\n", reply->CHECKSUM, crc32);
+
+        LOG_DBG("RPL %x:%x cmd %x state %x seq %x frag %x data[0] %x len %x sum %x\n",
+                reply->RPL[0], reply->RPL[1], reply->COMMAND, reply->STATE,
+                reply->SEQUENCE,
+                reply->FRAGMENT, reply->PAYLOAD[0], reply->LENGTH, reply->CHECKSUM);
         return -1;
     }
 
@@ -305,6 +324,12 @@ static int ubus_check_request_crc(const UART_REQUEST *request)
     unsigned int crc32 = do_crc32(0, request, sizeof(*request)-sizeof(request->CHECKSUM)-sizeof(request->STOP_BYTE));
 
     if(crc32 != request->CHECKSUM) {
+        LOG_ERR("crc should be 0x%x but get 0x%x\n", request->CHECKSUM, crc32);
+
+        LOG_DBG("REQ %x:%x cmd %x seq %x frag %x data[0] %x len %x sum %x\n",
+                request->REQ[0], request->REQ[1], request->COMMAND, request->SEQUENCE,
+                request->FRAGMENT,
+                request->PAYLOAD[0], request->LENGTH, request->CHECKSUM);
         return -1;
     }
 
@@ -358,7 +383,7 @@ static int ubus_spipe_recv_request(ubus_spipe_t *pipe, const UART_REQUEST *reque
 }
 
 // currently only handle one request/reply.
-static int ubus_dispatch_data(ubus_bus_t *bus_obj, void *data, int data_len)
+static int ubus_dispatch_data_1(ubus_bus_t *bus_obj, void *data, int data_len)
 {
     int i;
     UART_REQUEST *request = (UART_REQUEST *)data;
@@ -397,6 +422,20 @@ static int ubus_dispatch_data(ubus_bus_t *bus_obj, void *data, int data_len)
     return -1;
 }
 
+static int ubus_dispatch_data(ubus_bus_t *bus_obj)
+{
+    int i=0;
+    while(bus_obj->data_length >= EXPECTED_PACK_SIZE) {
+
+        LOG_DBG("try to dispatch %d\n", i++);
+        ubus_dispatch_data_1(bus_obj, bus_obj->data_queue, EXPECTED_PACK_SIZE);
+        memmove(bus_obj->data_queue, bus_obj->data_queue+EXPECTED_PACK_SIZE, EXPECTED_PACK_SIZE);
+        bus_obj->data_length -= EXPECTED_PACK_SIZE;
+    }
+    return 0;
+}
+
+
 static void *ubus_thread_routine(void *data)
 {
     ubus_bus_t *bus_obj = (ubus_bus_t *)data;
@@ -430,12 +469,17 @@ static void *ubus_thread_routine(void *data)
 
         // have data, process it
         read_bytes = read(bus_obj->fd, &u, sizeof(u));
-        if(read_bytes != sizeof(u)) {
-            LOG_ERR("invalid data received\n");
-            continue;
+
+        if(bus_obj->data_length+read_bytes > sizeof(bus_obj->data_queue)) {
+            LOG_ERR("queue overflow\n");
+        }
+        else if(read_bytes>0) {
+            //LOG_DBG("got %d bytes\n", (int)read_bytes);
+            memcpy(bus_obj->data_queue+bus_obj->data_length, (void *)&u, read_bytes);
+            bus_obj->data_length += read_bytes;
         }
 
-        ubus_dispatch_data(bus_obj, &u, sizeof(u));
+        ubus_dispatch_data(bus_obj);
     }
 
     // signal that thread is done cleaning and about to be closed
@@ -499,8 +543,12 @@ static int ubus_mpipe_generate_request(ubus_bus_t *bus_obj, ubus_mpipe_t *pipe,
     memset(raw->PAYLOAD, 0, sizeof(raw->PAYLOAD));
     memcpy(raw->PAYLOAD, request->data, request->data_length);
 
-    checksum = do_crc32(0, raw->PAYLOAD, raw->LENGTH);
+    checksum = do_crc32(0, (void *)raw, sizeof(*raw)-sizeof(raw->CHECKSUM)-sizeof(raw->STOP_BYTE));
     raw->CHECKSUM = checksum;
+
+    LOG_DBG("REQ %x:%x cmd %x seq %x frag %x data[0] %x len %x sum %x\n",
+            raw->REQ[0], raw->REQ[1], raw->COMMAND, raw->SEQUENCE, raw->FRAGMENT,
+            raw->PAYLOAD[0], raw->LENGTH, raw->CHECKSUM);
 
     return 0;
 }
@@ -554,9 +602,12 @@ static int ubus_spipe_generate_reply(ubus_bus_t *bus_obj, ubus_spipe_t *pipe,
     memset(raw->PAYLOAD, 0, sizeof(raw->PAYLOAD));
     memcpy(raw->PAYLOAD, reply->data, reply->data_length);
 
-    checksum = do_crc32(0, raw->PAYLOAD, raw->LENGTH);
+    checksum = do_crc32(0, (void *)raw, sizeof(*raw)-sizeof(raw->CHECKSUM)-sizeof(raw->STOP_BYTE));
     raw->CHECKSUM = checksum;
 
+    LOG_DBG("RPL %x:%x cmd %x state %x seq %x frag %x data[0] %x len %x sum %x\n",
+            raw->RPL[0], raw->RPL[1], raw->COMMAND, raw->STATE, raw->SEQUENCE,
+            raw->FRAGMENT, raw->PAYLOAD[0], raw->LENGTH, raw->CHECKSUM);
     return 0;
 }
 
@@ -565,10 +616,12 @@ static int ubus_send_data(ubus_bus_t *bus_obj, const unsigned char *buf, int len
     int i=0, j=length;
     int result = 0;
 
+    LOG_DBG("+\n");
     pthread_mutex_lock(&bus_obj->fd_lock);
 
     while(j) {
         ssize_t s;
+        LOG_DBG("writing %d\n", j);
         s = write(bus_obj->fd, buf+i, j);
         if(s<0) {
             LOG_ERR("unable to send data: %s\n", strerror(errno));
@@ -581,6 +634,7 @@ static int ubus_send_data(ubus_bus_t *bus_obj, const unsigned char *buf, int len
     }
 
     pthread_mutex_unlock(&bus_obj->fd_lock);
+    LOG_DBG("-\n");
     return result;
 }
 
@@ -601,6 +655,7 @@ static int ubus_send_reply(ubus_bus_t *bus_obj, const UART_REPLY *reply)
 int ubus_bus_init(ubus *pbus, char *uart_device, int baud_rate)
 {
     ubus_bus_t *bus_obj;
+    struct termios oldtio;
     int fd;
     int ret;
 
@@ -608,7 +663,7 @@ int ubus_bus_init(ubus *pbus, char *uart_device, int baud_rate)
         return -1;
     }
 
-    fd = ubus_uart_init(uart_device, baud_rate);
+    fd = ubus_uart_init(uart_device, baud_rate, &oldtio);
     if(fd<0) {
         return -1;
     }
@@ -621,6 +676,7 @@ int ubus_bus_init(ubus *pbus, char *uart_device, int baud_rate)
     // init ubus object
     bus_obj->fd = fd;
     bus_obj->sequence = 1;
+    bus_obj->oldtio = oldtio;
 
     ret = pthread_mutex_init(&bus_obj->fd_lock, NULL);
     if(ret) {
@@ -691,6 +747,10 @@ void ubus_bus_exit(ubus bus)
     pthread_mutex_destroy(&bus_obj->fd_lock);
     pthread_mutex_destroy(&bus_obj->queue_lock);
     pthread_mutex_destroy(&bus_obj->thread_lock);
+
+    // restore TTY settings
+    tcsetattr(bus_obj->fd, TCSANOW, &bus_obj->oldtio);
+    close(bus_obj->fd);
     free(bus_obj);
 }
 
@@ -774,7 +834,7 @@ int ubus_master_send_recv(ubus_mpipe p, const ubus_request_t *request, ubus_repl
 {
     ubus_mpipe_t *pipe = (ubus_mpipe_t *)p;
     ubus_bus_t *bus_obj = (ubus_bus_t *)pipe->bus_obj;
-    int max_try = 10;
+    int max_try = REQUEST_RETRY_TIMES;
     int result = 0;
 
     //----------------------------------
@@ -796,7 +856,7 @@ int ubus_master_send_recv(ubus_mpipe p, const ubus_request_t *request, ubus_repl
         }
 
         gettimeofday(&tv, NULL);
-        ts.tv_sec = tv.tv_sec + 5; // 5-second timeout
+        ts.tv_sec = tv.tv_sec + REPLY_TIMEOUT;
         ts.tv_nsec = 0;
 
         // send request and wait for reply
@@ -809,7 +869,7 @@ int ubus_master_send_recv(ubus_mpipe p, const ubus_request_t *request, ubus_repl
             // got reply
             ubus_mpipe_generate_reply(bus_obj, pipe, reply, &pipe->reply);
             if(UBUS_STATE_CRC_ERROR==reply->state) {
-                LOG_ERR("got reply crc error, retry\n");
+                LOG_ERR("reply crc error, retry\n");
                 continue;
             }
             else if(UBUS_STATE_BUSY==reply->state) {
