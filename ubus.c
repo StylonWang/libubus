@@ -60,7 +60,8 @@ typedef struct
 	unsigned char FRAGMENT;
 	unsigned char LENGTH;
 	unsigned char PAYLOAD[17];
-	unsigned int CHECKSUM;
+	//unsigned int CHECKSUM;
+    unsigned char CHECKSUM[4];
 	unsigned char STOP_BYTE;
 } UART_REQUEST;
 #pragma pack(pop)
@@ -76,7 +77,8 @@ typedef struct
 	unsigned char FRAGMENT;
 	unsigned char LENGTH;
 	unsigned char PAYLOAD[16]; //reply payload has only 15 bytes in order to fix 24 bytes total
-	unsigned int CHECKSUM;
+	//unsigned int CHECKSUM;
+    unsigned char CHECKSUM[4];
 	unsigned char STOP_BYTE;
 } UART_REPLY;
 #pragma pack(pop)
@@ -95,14 +97,20 @@ typedef struct _ubus_mpipe
     int index;
     void *bus_obj;
 
+    // signatures for dispatching
     packet_sig_t request_sig;
     packet_sig_t reply_sig;
 
+    // thead control
     pthread_mutex_t pipe_lock;
     pthread_cond_t reply_cond;
     bool reply_received;
+
     UART_REQUEST request; // single request-reply mapping. no packetization.
     UART_REPLY reply;
+
+    uint8_t last_reply_sequence;
+    uint8_t request_sequence;
 
 } ubus_mpipe_t;
 
@@ -112,14 +120,20 @@ typedef struct _ubus_spipe
     int index;
     void *bus_obj;
 
+    // signatures for dispatching
     packet_sig_t request_sig;
     packet_sig_t reply_sig;
 
+    // thread control
     pthread_mutex_t pipe_lock;
     pthread_cond_t request_cond;
     bool request_received;
+
     UART_REQUEST request; // single request-reply mapping. no packetization.
     UART_REPLY reply;
+
+    uint8_t last_request_sequence;
+    uint8_t reply_sequence;
 
 } ubus_spipe_t;
 
@@ -127,7 +141,8 @@ typedef struct _ubus_bus_t
 {
     pthread_mutex_t fd_lock;
     int fd; // file descriptor to RS232 device
-    unsigned long sequence; // transport sequence
+    //unsigned long sequence; // transport sequence
+    //unsigned long last_received_sequence;
     struct termios oldtio;
 
     // data received from RS232 are queued here for processing
@@ -313,15 +328,20 @@ static unsigned int do_crc32(unsigned int crc, const void *buf, int size)
 
 static int ubus_check_reply_crc(const UART_REPLY *reply)
 {
-    unsigned int crc32 = do_crc32(0, reply, sizeof(*reply)-sizeof(reply->CHECKSUM)-sizeof(reply->STOP_BYTE));
+    uint32_t crc32 = do_crc32(0, reply, sizeof(*reply)-sizeof(reply->CHECKSUM)-sizeof(reply->STOP_BYTE));
+    uint32_t reply_crc32 = (uint32_t)reply->CHECKSUM[3]<<24 | 
+                           (uint32_t)reply->CHECKSUM[2]<<16 |
+                           (uint32_t)reply->CHECKSUM[1]<<8 | 
+                           (uint32_t)reply->CHECKSUM[0];
 
-    if(crc32 != reply->CHECKSUM) {
-        LOG_ERR("crc should be 0x%x but get 0x%x\n", reply->CHECKSUM, crc32);
+    if(crc32 != reply_crc32) {
+        LOG_ERR("crc computed 0x%x V.S. 0x%x in packet\n", crc32, reply_crc32);
 
         LOG_DBG("RPL %x:%x cmd %x state %x seq %x frag %x data[0] %x len %x sum %x\n",
                 reply->RPL[0], reply->RPL[1], reply->COMMAND, reply->STATE,
                 reply->SEQUENCE,
-                reply->FRAGMENT, reply->PAYLOAD[0], reply->LENGTH, reply->CHECKSUM);
+                reply->FRAGMENT, reply->PAYLOAD[0], reply->LENGTH, reply_crc32);
+
         return -1;
     }
 
@@ -330,15 +350,19 @@ static int ubus_check_reply_crc(const UART_REPLY *reply)
 
 static int ubus_check_request_crc(const UART_REQUEST *request)
 {
-    unsigned int crc32 = do_crc32(0, request, sizeof(*request)-sizeof(request->CHECKSUM)-sizeof(request->STOP_BYTE));
+    uint32_t crc32 = do_crc32(0, request, sizeof(*request)-sizeof(request->CHECKSUM)-sizeof(request->STOP_BYTE));
+    uint32_t request_crc32 = (uint32_t)request->CHECKSUM[3]<<24 | 
+                           (uint32_t)request->CHECKSUM[2]<<16 |
+                           (uint32_t)request->CHECKSUM[1]<<8 | 
+                           (uint32_t)request->CHECKSUM[0];
 
-    if(crc32 != request->CHECKSUM) {
-        LOG_ERR("crc should be 0x%x but get 0x%x\n", request->CHECKSUM, crc32);
+    if(crc32 != request_crc32) {
+        LOG_ERR("crc computed 0x%x V.S. 0x%x in packet\n", crc32, request_crc32);
 
         LOG_DBG("REQ %x:%x cmd %x seq %x frag %x data[0] %x len %x sum %x\n",
                 request->REQ[0], request->REQ[1], request->COMMAND, request->SEQUENCE,
                 request->FRAGMENT,
-                request->PAYLOAD[0], request->LENGTH, request->CHECKSUM);
+                request->PAYLOAD[0], request->LENGTH, request_crc32);
         return -1;
     }
 
@@ -361,7 +385,17 @@ static int ubus_mpipe_recv_reply(ubus_mpipe_t *pipe, const UART_REPLY *reply)
     if(reply->COMMAND == pipe->request.COMMAND) {
         memcpy(&pipe->reply, reply, sizeof(*reply));
         pipe->reply_received = true;
+
+        if(reply->SEQUENCE<=pipe->last_reply_sequence) {
+            LOG_ERR("WARNING: sequence jump backwards!\n");
+        }
+        pipe->last_reply_sequence = reply->SEQUENCE;
+
         pthread_cond_signal(&pipe->reply_cond);
+    }
+    else {
+        LOG_ERR("WARNING: got reply(0x%x) without matching request(0x%x)\n",
+                reply->COMMAND, pipe->request.COMMAND);
     }
 
     pthread_mutex_unlock(&pipe->pipe_lock);
@@ -385,6 +419,10 @@ static int ubus_spipe_recv_request(ubus_spipe_t *pipe, const UART_REQUEST *reque
 
     memcpy(&pipe->request, request, sizeof(*request));
     pipe->request_received = true;
+    if(request->SEQUENCE<=pipe->last_request_sequence) {
+        LOG_ERR("WARNING: sequence jump backwards!\n");
+    }
+    pipe->last_request_sequence = request->SEQUENCE;
     pthread_cond_signal(&pipe->request_cond);
 
     pthread_mutex_unlock(&pipe->pipe_lock);
@@ -544,7 +582,7 @@ static int ubus_internal_check(void)
 static int ubus_mpipe_generate_request(ubus_bus_t *bus_obj, ubus_mpipe_t *pipe,
         UART_REQUEST *raw, const ubus_request_t *request)
 {
-    unsigned int checksum;
+    uint32_t checksum;
 
     if(request->data_length > sizeof(raw->PAYLOAD)) {
         LOG_ERR("request length %d too long\n", request->data_length);
@@ -556,9 +594,10 @@ static int ubus_mpipe_generate_request(ubus_bus_t *bus_obj, ubus_mpipe_t *pipe,
     raw->STOP_BYTE = pipe->request_sig.stop_byte;
     raw->COMMAND = request->command;
 
-    pthread_mutex_lock(&bus_obj->queue_lock);
-    raw->SEQUENCE = (bus_obj->sequence++)%0xFF;
-    pthread_mutex_unlock(&bus_obj->queue_lock);
+    //pthread_mutex_lock(&bus_obj->queue_lock);
+    //raw->SEQUENCE = (bus_obj->sequence++)%0xFF;
+    //pthread_mutex_unlock(&bus_obj->queue_lock);
+    raw->SEQUENCE = pipe->request_sequence++;
 
     raw->FRAGMENT = 0x00; // no fragment
     raw->LENGTH = request->data_length;
@@ -566,11 +605,14 @@ static int ubus_mpipe_generate_request(ubus_bus_t *bus_obj, ubus_mpipe_t *pipe,
     memcpy(raw->PAYLOAD, request->data, request->data_length);
 
     checksum = do_crc32(0, (void *)raw, sizeof(*raw)-sizeof(raw->CHECKSUM)-sizeof(raw->STOP_BYTE));
-    raw->CHECKSUM = checksum;
+    raw->CHECKSUM[0] = checksum & 0xFF;
+    raw->CHECKSUM[1] = (checksum>>8) & 0xFF;
+    raw->CHECKSUM[2] = (checksum>>16) & 0xFF;
+    raw->CHECKSUM[3] = (checksum>>24) & 0xFF;
 
     LOG_DBG("REQ %x:%x cmd %x seq %x frag %x data[0] %x len %x sum %x\n",
             raw->REQ[0], raw->REQ[1], raw->COMMAND, raw->SEQUENCE, raw->FRAGMENT,
-            raw->PAYLOAD[0], raw->LENGTH, raw->CHECKSUM);
+            raw->PAYLOAD[0], raw->LENGTH, checksum);
 
     return 0;
 }
@@ -615,9 +657,10 @@ static int ubus_spipe_generate_reply(ubus_bus_t *bus_obj, ubus_spipe_t *pipe,
     raw->COMMAND = reply->command;
     raw->STATE = reply->state;
 
-    pthread_mutex_lock(&bus_obj->queue_lock);
-    raw->SEQUENCE = (bus_obj->sequence++)%0xFF;
-    pthread_mutex_unlock(&bus_obj->queue_lock);
+    //pthread_mutex_lock(&bus_obj->queue_lock);
+    //raw->SEQUENCE = (bus_obj->sequence++)%0xFF;
+    //pthread_mutex_unlock(&bus_obj->queue_lock);
+    raw->SEQUENCE = pipe->reply_sequence++;
 
     raw->FRAGMENT = 0x00; // no fragment
     raw->LENGTH = reply->data_length;
@@ -625,11 +668,14 @@ static int ubus_spipe_generate_reply(ubus_bus_t *bus_obj, ubus_spipe_t *pipe,
     memcpy(raw->PAYLOAD, reply->data, reply->data_length);
 
     checksum = do_crc32(0, (void *)raw, sizeof(*raw)-sizeof(raw->CHECKSUM)-sizeof(raw->STOP_BYTE));
-    raw->CHECKSUM = checksum;
+    raw->CHECKSUM[0] = checksum & 0xFF;
+    raw->CHECKSUM[1] = (checksum>>8) & 0xFF;
+    raw->CHECKSUM[2] = (checksum>>16) & 0xFF;
+    raw->CHECKSUM[3] = (checksum>>24) & 0xFF;
 
     LOG_DBG("RPL %x:%x cmd %x state %x seq %x frag %x data[0] %x len %x sum %x\n",
             raw->RPL[0], raw->RPL[1], raw->COMMAND, raw->STATE, raw->SEQUENCE,
-            raw->FRAGMENT, raw->PAYLOAD[0], raw->LENGTH, raw->CHECKSUM);
+            raw->FRAGMENT, raw->PAYLOAD[0], raw->LENGTH, checksum);
     return 0;
 }
 
@@ -697,7 +743,7 @@ int ubus_bus_init(ubus *pbus, char *uart_device, int baud_rate)
 
     // init ubus object
     bus_obj->fd = fd;
-    bus_obj->sequence = 1;
+    //bus_obj->sequence = 1;
     bus_obj->oldtio = oldtio;
 
     ret = pthread_mutex_init(&bus_obj->fd_lock, NULL);
@@ -792,6 +838,7 @@ ubus_mpipe ubus_master_pipe_new(ubus bus, packet_sig_t request_sig, packet_sig_t
             bus_obj->mpipes[i].pipe.reply_sig = reply_sig;
             bus_obj->mpipes[i].pipe.bus_obj = bus_obj;
             bus_obj->mpipes[i].pipe.index = i;
+            bus_obj->mpipes[i].pipe.request_sequence = 1;
             pthread_mutex_init(&bus_obj->mpipes[i].pipe.pipe_lock, NULL);
 
             return (ubus_mpipe )&bus_obj->mpipes[i].pipe;
@@ -828,6 +875,7 @@ ubus_spipe ubus_slave_pipe_new(ubus bus, packet_sig_t request_sig, packet_sig_t 
             bus_obj->spipes[i].pipe.reply_sig = reply_sig;
             bus_obj->spipes[i].pipe.bus_obj = bus_obj;
             bus_obj->spipes[i].pipe.index = i;
+            bus_obj->spipes[i].pipe.reply_sequence = 1;
             pthread_mutex_init(&bus_obj->spipes[i].pipe.pipe_lock, NULL);
             pthread_cond_init(&bus_obj->spipes[i].pipe.request_cond, NULL);
 
@@ -946,7 +994,7 @@ int ubus_slave_recv(ubus_spipe p, ubus_request_t *request, int timeout_sec)
         result = 0;
     }
     else {
-        result = -1;
+        result = -EAGAIN;
         LOG_DBG("no request for now\n");
     }
 
@@ -966,9 +1014,12 @@ int ubus_slave_send(ubus_spipe p, const ubus_reply_t *reply)
 
     pthread_mutex_lock(&pipe->pipe_lock);
 
-    ubus_spipe_generate_reply(bus_obj, pipe, &pipe->reply, reply);
-    ubus_send_reply(bus_obj, &pipe->reply);
+    result = ubus_spipe_generate_reply(bus_obj, pipe, &pipe->reply, reply);
+    if(result<0) goto done;
 
+    result = ubus_send_reply(bus_obj, &pipe->reply);
+
+done:
     pthread_mutex_unlock(&pipe->pipe_lock);
 
     return result;

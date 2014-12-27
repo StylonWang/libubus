@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 
 #include "ubus.h"
 
@@ -29,7 +30,13 @@ int main(int argc, char **argv)
 
         fprintf(stderr, "Waiting for requests....\n");
         ret = ubus_slave_recv(pipe, &request, 3);
-        if(ret<0) continue;
+        if(ret<0 && -EAGAIN==ret) {
+            continue;
+        }
+        else if(ret<0) {
+            fprintf(stderr, "ubus_slave_recv failed: %d\n", ret);
+            break;
+        }
 
         fprintf(stderr, "Received Request:\n");
         fprintf(stderr, "cmd=0x%x, data[0]=0x%x, len=%d\n", 
@@ -40,6 +47,10 @@ int main(int argc, char **argv)
         reply.data_length = 0;
 
         ret = ubus_slave_send(pipe, &reply);
+        if(ret<0) {
+            fprintf(stderr, "ubus_slave_send failed: %d\n", ret);
+            break;
+        }
     }
 
     ubus_slave_pipe_del(pipe);

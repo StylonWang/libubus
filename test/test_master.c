@@ -3,12 +3,7 @@
 
 #include "ubus.h"
 
-static ubus_request_t test_cases[] = {
-    // command, data, sequence 
-    { 0x01, {0x01, }, 0x01 },
-    { 0x02, {0x01, }, 0x01 },
-    { 0x03, {0x01, }, 0x01 },
-};
+#include "test_case.h"
 
 int main(int argc, char **argv)
 {
@@ -37,6 +32,7 @@ int main(int argc, char **argv)
         ret = ubus_master_send_recv(pipe, &test_cases[i], &reply);
         if(ret<0) {
             fprintf(stderr, "failed\n");
+            exit(1);
         }
 
         fprintf(stderr, "state=%s, data[0]=0x%x, len=%d\n", 
@@ -46,6 +42,9 @@ int main(int argc, char **argv)
                 (reply.state==UBUS_STATE_BUSY)? "busy" : "invalid state",
                 reply.data[0], reply.data_length);
 
+        if(reply.state!=UBUS_STATE_OK) {
+            fprintf(stderr, "reply failed: %d\n", reply.state);
+        }
     }
 
     ubus_master_pipe_del(pipe);
