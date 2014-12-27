@@ -89,6 +89,19 @@ int ubus_master_send_recv(ubus_mpipe pipe, const ubus_request_t *request, ubus_r
 int ubus_slave_recv(ubus_spipe pipe, ubus_request_t *request, int timeout_sec);
 int ubus_slave_send(ubus_spipe pipe, const ubus_reply_t *reply);
 
+typedef enum {
+    UBUS_TEST_MISSING_BYTES = 0,
+    UBUS_TEST_PACKET_LOSS,
+    UBUS_TEST_CORRUPTION,
+    UBUS_TEST_GARBAGE,
+    UBUS_TEST_ID_MAX,
+} ubus_test_id;
+
+int ubus_test_enable(ubus bus, ubus_test_id test_id);
+int ubus_test_disable(ubus bus, ubus_test_id test_id);
+int ubus_test_set_fail_rate(ubus bus, int fail_percentage);
+int ubus_test_report(ubus bus);
+
 // legacy master/slave id used in C285 project.
 // DO NOT re-use in non-related projects unless for compatibility.
 

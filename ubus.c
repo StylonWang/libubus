@@ -13,6 +13,7 @@
 #include <sys/types.h>
 #include <sys/uio.h>
 #include <sys/time.h>
+#include <assert.h>
 
 #include "ubus.h"
 
@@ -29,7 +30,8 @@ packet_sig_t DM368_2_NUC100_REPLY_SIG = { 0x4D, 0x59, 0x52, };
 packet_sig_t NUC100_2_DM368_REQUEST_SIG = { 0x43, 0x53, 0x50, };
 packet_sig_t NUC100_2_DM368_REPLY_SIG = { 0x55, 0x4C, 0x45, };
 
-#if 0
+// these are original ID used in C285 code. They are turned into ubus signatures above..
+/*
 #define DM368_2_FAC_MASTER_ID       (0x00026106)
 #define DM368_2_FAC_SLAVE_ID        (0x00036207)
 #define FAC_2_DM368_MASTER_ID       (0x00046308)
@@ -38,10 +40,10 @@ packet_sig_t NUC100_2_DM368_REPLY_SIG = { 0x55, 0x4C, 0x45, };
 #define DM368_2_NUC100_SLAVE_ID     (0x004D5952)
 #define NUC100_2_DM368_MASTER_ID    (0x00435350)
 #define NUC100_2_DM368_SLAVE_ID     (0x00554C45)
-#endif 
+*/ 
 
 // timeout and try values
-#define REQUEST_RETRY_TIMES 3
+#define REQUEST_RETRY_TIMES 10
 #define REPLY_TIMEOUT 2
 
 // -------------------------------------------
@@ -109,6 +111,7 @@ typedef struct _ubus_mpipe
     UART_REQUEST request; // single request-reply mapping. no packetization.
     UART_REPLY reply;
 
+    // sequence control
     uint8_t last_reply_sequence;
     uint8_t request_sequence;
 
@@ -132,10 +135,25 @@ typedef struct _ubus_spipe
     UART_REQUEST request; // single request-reply mapping. no packetization.
     UART_REPLY reply;
 
+    // sequence control
     uint8_t last_request_sequence;
     uint8_t reply_sequence;
 
 } ubus_spipe_t;
+
+typedef struct _ubus_test_t
+{
+    bool enabled;
+    int fail_rate; // in percentage.
+
+    unsigned long total_packets;
+
+    struct {
+        bool enabled;
+        unsigned long packets;
+    } test_items[UBUS_TEST_ID_MAX];
+
+} ubus_test_t;
 
 typedef struct _ubus_bus_t
 {
@@ -166,6 +184,8 @@ typedef struct _ubus_bus_t
         bool in_use;
         ubus_spipe_t pipe; 
     } spipes[MAX_SPIPES];
+
+    ubus_test_t test;
      
 } ubus_bus_t;
 
@@ -180,6 +200,8 @@ enum {
 #define LOG_ERR(fmt, args...) do { fprintf(stderr, "[%s:%d]"fmt, __FUNCTION__, __LINE__,##args); } while(0)
 #define LOG_DBG(fmt, args...) do { fprintf(stderr, "[%s:%d]"fmt, __FUNCTION__, __LINE__, ##args); } while(0)
 
+#define LOG_ERR_S(fmt, args...) do { fprintf(stderr, fmt, ##args); } while(0)
+#define LOG_DBG_S(fmt, args...) do { fprintf(stderr, fmt, ##args); } while(0)
 //--------------------------------------------------------------
 // Internal routines
 
@@ -706,14 +728,253 @@ static int ubus_send_data(ubus_bus_t *bus_obj, const unsigned char *buf, int len
     return result;
 }
 
+static ubus_test_id ubus_test_decide(ubus_bus_t *bus_obj)
+{
+    int chance;
+    int id;
+    int i;
+    int num_tests = 0;
+    ubus_test_id enabled_tests[UBUS_TEST_ID_MAX];
+
+    // test not enabled
+    if(!bus_obj->test.enabled) return UBUS_TEST_ID_MAX;
+
+    // if test enabled, let fate decide whether this packet should 
+    // be made an error.
+    chance = (rand() % 100 )+1;
+    if(chance>bus_obj->test.fail_rate) return UBUS_TEST_ID_MAX;
+
+    // choose test items from enabled ones
+    for(i=0; i<UBUS_TEST_ID_MAX; ++i) {
+        if(bus_obj->test.test_items[i].enabled) {
+            enabled_tests[num_tests] = i;
+            num_tests++;
+        }
+    }
+    i = rand() % num_tests;
+    id = enabled_tests[i];
+    LOG_DBG("Test decided: %d %s\n", chance,
+                (UBUS_TEST_MISSING_BYTES==id)? "Missing bytes" :
+                (UBUS_TEST_PACKET_LOSS==id)? "Packet loss" :
+                (UBUS_TEST_CORRUPTION==id)? "Data error" :
+                (UBUS_TEST_GARBAGE==id)? "Garbage" : "Unknown"
+            );
+    return id;
+}
+
+static int ubus_test_send_data_missing(ubus_bus_t *bus_obj, const unsigned char *data, int length)
+{
+    int i;
+    unsigned char *buf;
+    int drop_start = rand() % length; 
+    int drop_length = (rand() % (length-drop_start)) +1;
+    int result=0;
+
+    // make a copy
+    buf = malloc(length);
+    memcpy(buf, data, length);
+
+    assert(drop_start+drop_length<=length);
+   
+    if(drop_start+drop_length==length) {
+        // in this case, tail of the packet is dropped
+
+        LOG_DBG("s=%d len=%d\n", drop_start, drop_length);
+        for(i=0; i<length; ++i) { // print original data
+            LOG_DBG_S("%x ", data[i]);
+        }
+        LOG_DBG_S("\n");
+        for(i=0; i<length-drop_length; ++i) { // print data after bytes dropped
+            LOG_DBG_S("%x ", buf[i]);
+        }
+        LOG_DBG_S("\n");
+
+        result = ubus_send_data(bus_obj, buf, length-drop_length);
+    }
+    else {
+        // in this case, head or middle of the packet is dropped.
+        // remove the dropped bytes before sending
+        memmove(buf+drop_start, buf+drop_start+drop_length, length-(drop_start+drop_length));
+        LOG_DBG("s=%d len=%d\n", drop_start, drop_length);
+        for(i=0; i<length; ++i) { // print original data
+            LOG_DBG_S("%x ", data[i]);
+        }
+        LOG_DBG_S("\n");
+
+
+        for(i=0; i<length-drop_length; ++i) { // print data after bytes dropped
+            LOG_DBG_S("%x ", buf[i]);
+        }
+        LOG_DBG_S("\n");
+        result = ubus_send_data(bus_obj, buf, length-drop_length);
+    }
+
+    free(buf);
+    return result;
+}
+
+static int ubus_test_send_scramble_data(ubus_bus_t *bus_obj, const unsigned char *data, int length)
+{
+    int i;
+    unsigned char *buf;
+    int result=0;
+    int drop_start = rand() % length; 
+    int drop_length = (rand() % (length-drop_start)) +1;
+
+    // make a copy
+    buf = malloc(length);
+    memcpy(buf, data, length);
+
+    // scramble the data
+    for(i=0; i<drop_length; ++i) {
+        buf[drop_start+i] = rand()%256;
+    }
+
+    LOG_DBG("s=%d len=%d\n", drop_start, drop_length);
+    for(i=0; i<length; ++i) { // print original data
+        LOG_DBG_S("%x ", data[i]);
+    }
+    LOG_DBG_S("\n");
+    for(i=0; i<length; ++i) { // print scrambled data
+        LOG_DBG_S("%x ", buf[i]);
+    }
+    LOG_DBG_S("\n");
+
+    result = ubus_send_data(bus_obj, buf, length);
+    free(buf);
+    return result;
+}
+
+static int ubus_test_send_with_garbage(ubus_bus_t *bus_obj, const unsigned char *data, int length)
+{
+    int i;
+    int result = 0;
+    int placement = rand() % 3;
+    int garbage_len = rand() % 80;
+    unsigned char *garbage = malloc(garbage_len);
+
+    for(i=0; i<garbage_len; ++i) {
+        garbage[i] = rand()%256;
+    }
+    
+    if(0==placement) { // garbage before packet
+        LOG_DBG("garbage first\n");
+
+        for(i=0; i<garbage_len; ++i) LOG_DBG_S("%x ", garbage[i]);
+        LOG_DBG_S("\n");
+        for(i=0; i<length; ++i) LOG_DBG_S("%x ", data[i]);
+        LOG_DBG_S("\n");
+
+        result = ubus_send_data(bus_obj, garbage, garbage_len);
+        if(result<0) goto done;
+        result = ubus_send_data(bus_obj, data, length);
+    }
+    else if(1==placement) { // garbage in packet
+        LOG_DBG("garbage in\n");
+        int slice_point = (rand() % length);
+        // let's not make this "garbage after packet"
+        if(slice_point+1==length) slice_point--;
+
+
+        for(i=0; i<slice_point+1; ++i) LOG_DBG_S("%x ", data[i]);
+        LOG_DBG_S("\n");
+        for(i=0; i<garbage_len; ++i) LOG_DBG_S("%x ", garbage[i]);
+        LOG_DBG_S("\n");
+        for(i=0; i<length-slice_point-1; ++i) LOG_DBG_S("%x ", data[slice_point+1+i]);
+        LOG_DBG_S("\n");
+
+        // send first piece 
+        result = ubus_send_data(bus_obj, data, slice_point+1);
+        if(result<0) goto done;
+
+        // send garbage
+        result = ubus_send_data(bus_obj, garbage, garbage_len);
+        if(result<0) goto done;
+
+        // send 2nd piece
+        result = ubus_send_data(bus_obj, data+slice_point+1, length-slice_point-1);
+    }
+    else { // garbage after packet
+        LOG_DBG("garbage after\n");
+
+        for(i=0; i<length; ++i) LOG_DBG_S("%x ", data[i]);
+        LOG_DBG_S("\n");
+        for(i=0; i<garbage_len; ++i) LOG_DBG_S("%x ", garbage[i]);
+        LOG_DBG_S("\n");
+
+        result = ubus_send_data(bus_obj, data, length);
+        if(result<0) goto done;
+        result = ubus_send_data(bus_obj, garbage, garbage_len);
+    }
+    
+done:
+    free(garbage);
+    return result;
+}
+
+static int ubus_send_data_test(ubus_bus_t *bus_obj, const unsigned char *data, int length,
+                                    ubus_test_id test_id)
+{
+    switch(test_id) {
+        case UBUS_TEST_MISSING_BYTES:
+            // send with some missing bytes
+            bus_obj->test.test_items[test_id].packets++;
+            return ubus_test_send_data_missing(bus_obj, data, length);
+
+        case UBUS_TEST_PACKET_LOSS:
+            // not sending this packet at all
+            LOG_DBG("do not send packet\n");
+            bus_obj->test.test_items[test_id].packets++;
+            return 0;
+
+        case UBUS_TEST_CORRUPTION:
+            // corrupt data in packet
+            bus_obj->test.test_items[test_id].packets++;
+            return ubus_test_send_scramble_data(bus_obj, data, length);
+
+        case UBUS_TEST_GARBAGE:
+            bus_obj->test.test_items[test_id].packets++;
+            return ubus_test_send_with_garbage(bus_obj, data, length);
+
+        default:
+            assert(0);
+            break;
+    }
+
+    // do nothing
+    return 0;
+}
+
 static int ubus_send_request(ubus_bus_t *bus_obj, const UART_REQUEST *request)
 {
-    return ubus_send_data(bus_obj, (const unsigned char *)request, sizeof(*request));
+    // test fixture
+    ubus_test_id test_id = ubus_test_decide(bus_obj);
+
+    bus_obj->test.total_packets++;
+
+    if(UBUS_TEST_ID_MAX==test_id) {
+        return ubus_send_data(bus_obj, (const unsigned char *)request, sizeof(*request));
+    }
+    else {
+        return ubus_send_data_test(bus_obj, (const unsigned char *)request, sizeof(*request),
+                              test_id);
+    }
 }
 
 static int ubus_send_reply(ubus_bus_t *bus_obj, const UART_REPLY *reply)
 {
-    return ubus_send_data(bus_obj, (const unsigned char *)reply, sizeof(*reply));
+    // test fixture
+    ubus_test_id test_id = ubus_test_decide(bus_obj);
+
+    bus_obj->test.total_packets++;
+
+    if(UBUS_TEST_ID_MAX==test_id) {
+        return ubus_send_data(bus_obj, (const unsigned char *)reply, sizeof(*reply));
+    }
+    else {
+        return ubus_send_data_test(bus_obj, (unsigned char *)reply, sizeof(*reply),
+                              test_id);
+    }
 }
 
 // End of internal routines
@@ -730,6 +991,8 @@ int ubus_bus_init(ubus *pbus, char *uart_device, int baud_rate)
     if(ubus_internal_check()<0) {
         return -1;
     }
+
+    srand(time(NULL));
 
     fd = ubus_uart_init(uart_device, baud_rate, &oldtio);
     if(fd<0) {
@@ -1025,4 +1288,71 @@ done:
     return result;
 }
 
+// ------------------------------------------------
+// Test routines
 
+int ubus_test_enable(ubus bus, ubus_test_id test_id)
+{
+    ubus_bus_t *bus_obj = (ubus_bus_t *)bus;
+
+    if(test_id>=UBUS_TEST_ID_MAX) return -EINVAL;
+
+    bus_obj->test.test_items[test_id].enabled = true;
+    bus_obj->test.enabled = true;
+    return 0;
+}
+
+int ubus_test_disable(ubus bus, ubus_test_id test_id)
+{
+    int i;
+    ubus_bus_t *bus_obj = (ubus_bus_t *)bus;
+
+    if(test_id>=UBUS_TEST_ID_MAX) return -EINVAL;
+    bus_obj->test.test_items[test_id].enabled = false;
+    
+    // clear enable flag unless there is still enabled test items.
+    bus_obj->test.enabled = false;
+    for(i=0; i<UBUS_TEST_ID_MAX; ++i) {
+        if(bus_obj->test.test_items[test_id].enabled) {
+            bus_obj->test.enabled = true;
+        }
+    }
+    return 0;
+}
+
+int ubus_test_set_fail_rate(ubus bus, int fail_percentage)
+{
+    ubus_bus_t *bus_obj = (ubus_bus_t *)bus;
+
+    if(fail_percentage<0 || fail_percentage>100) {
+        return -EINVAL;     
+    }
+    bus_obj->test.fail_rate = fail_percentage;
+    return 0;
+}
+
+int ubus_test_report(ubus bus)
+{
+    ubus_bus_t *bus_obj = (ubus_bus_t *)bus;
+    int i;
+    unsigned long total_fail_packets = 0;
+
+    fprintf(stderr, "Test fail rate is set to: %d%%\n", bus_obj->test.fail_rate);
+    for(i=0; i<UBUS_TEST_ID_MAX; ++i) {
+        fprintf(stderr, "Test %10s, %ld packets\n", 
+                (UBUS_TEST_MISSING_BYTES==i)? "Missing bytes" :
+                (UBUS_TEST_PACKET_LOSS==i)? "Packet loss" :
+                (UBUS_TEST_CORRUPTION==i)? "Data error" :
+                (UBUS_TEST_GARBAGE==i)? "Garbage" : "Unknown",
+                bus_obj->test.test_items[i].packets
+                );
+        total_fail_packets += bus_obj->test.test_items[i].packets;
+    }
+
+    fprintf(stderr, "Total failed packets: %ld\n", total_fail_packets);
+    fprintf(stderr, "Total packets: %ld\n", bus_obj->test.total_packets);
+    return 0;
+}
+
+// End of Test routines
+// ------------------------------------------------
