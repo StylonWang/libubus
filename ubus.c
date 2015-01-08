@@ -406,13 +406,12 @@ static int ubus_mpipe_recv_reply(ubus_mpipe_t *pipe, const UART_REPLY *reply)
 
     if(reply->COMMAND == pipe->request.COMMAND) {
         memcpy(&pipe->reply, reply, sizeof(*reply));
-        pipe->reply_received = true;
 
         if(reply->SEQUENCE<=pipe->last_reply_sequence) {
             LOG_ERR("WARNING: sequence jump backwards!\n");
         }
         pipe->last_reply_sequence = reply->SEQUENCE;
-
+        pipe->reply_received = true;
         pthread_cond_signal(&pipe->reply_cond);
     }
     else {
@@ -1103,6 +1102,7 @@ ubus_mpipe ubus_master_pipe_new(ubus bus, packet_sig_t request_sig, packet_sig_t
             bus_obj->mpipes[i].pipe.index = i;
             bus_obj->mpipes[i].pipe.request_sequence = 1;
             pthread_mutex_init(&bus_obj->mpipes[i].pipe.pipe_lock, NULL);
+            pthread_cond_init(&bus_obj->mpipes[i].pipe.reply_cond, NULL);
 
             return (ubus_mpipe )&bus_obj->mpipes[i].pipe;
         }
@@ -1177,7 +1177,6 @@ int ubus_master_send_recv(ubus_mpipe p, const ubus_request_t *request, ubus_repl
     ubus_mpipe_generate_request(bus_obj, pipe, &pipe->request, request);
 
     while(1) {
-
         struct timeval tv;
         struct timespec ts;
 
@@ -1188,17 +1187,17 @@ int ubus_master_send_recv(ubus_mpipe p, const ubus_request_t *request, ubus_repl
             break;
         }
 
-        gettimeofday(&tv, NULL);
-        ts.tv_sec = tv.tv_sec + REPLY_TIMEOUT;
-        ts.tv_nsec = 0;
-
         // send request and wait for reply
-        pthread_cond_init(&pipe->reply_cond, NULL);
-        pipe->reply_received = false;
         ubus_send_request(bus_obj, &pipe->request);
-        pthread_cond_timedwait(&pipe->reply_cond, &pipe->pipe_lock, &ts);
+        if(!pipe->reply_received) {
+            gettimeofday(&tv, NULL);
+            ts.tv_sec = tv.tv_sec + REPLY_TIMEOUT;
+            ts.tv_nsec = 0;
+            pthread_cond_timedwait(&pipe->reply_cond, &pipe->pipe_lock, &ts);
+        }
 
         if(pipe->reply_received) {
+            pipe->reply_received = false;
             // got reply
             ubus_mpipe_generate_reply(bus_obj, pipe, reply, &pipe->reply);
             if(UBUS_STATE_CRC_ERROR==reply->state) {
