@@ -1,7 +1,7 @@
 
 CROSS_COMPILE=
 CC=$(CROSS_COMPILE)gcc
-CFLAGS=-Wall
+CFLAGS=-Wall -g
 LDFLAGS=-lpthread
 CROSS_CC=arm-none-linux-gnueabi-gcc
 #CROSS_CC=arm-linux-gnueabihf-gcc-4.7

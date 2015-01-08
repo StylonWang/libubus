@@ -44,7 +44,7 @@ packet_sig_t NUC100_2_DM368_REPLY_SIG = { 0x55, 0x4C, 0x45, };
 
 // timeout and try values
 #define REQUEST_RETRY_TIMES 10
-#define REPLY_TIMEOUT 2
+#define REPLY_TIMEOUT_SEC 2
 
 // -------------------------------------------
 // actual data layout in packets flowing on RS232
@@ -1185,7 +1185,7 @@ int ubus_master_send_recv(ubus_mpipe pipe, const ubus_request_t *request, ubus_r
         ubus_send_request(bus_obj, &pipe->request);
         if(!pipe->reply_received) {
             gettimeofday(&tv, NULL);
-            ts.tv_sec = tv.tv_sec + REPLY_TIMEOUT;
+            ts.tv_sec = tv.tv_sec + REPLY_TIMEOUT_SEC;
             ts.tv_nsec = 0;
             pthread_cond_timedwait(&pipe->reply_cond, &pipe->pipe_lock, &ts);
         }
