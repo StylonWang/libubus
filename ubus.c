@@ -93,7 +93,7 @@ typedef struct
 #define MAX_MPIPES (4)
 #define MAX_SPIPES (4)
 
-typedef struct _ubus_mpipe
+typedef struct ubus_mpipe_t
 {
     // reverse mapping back to bus object
     int index;
@@ -117,7 +117,7 @@ typedef struct _ubus_mpipe
 
 } ubus_mpipe_t;
 
-typedef struct _ubus_spipe
+typedef struct ubus_spipe_t
 {
     // reverse mapping back to bus object
     int index;
@@ -155,7 +155,7 @@ typedef struct _ubus_test_t
 
 } ubus_test_t;
 
-typedef struct _ubus_bus_t
+typedef struct ubus_bus_t
 {
     pthread_mutex_t fd_lock;
     int fd; // file descriptor to RS232 device
@@ -1058,9 +1058,8 @@ int ubus_bus_init(ubus *pbus, char *uart_device, int baud_rate)
     return 0;
 }
 
-void ubus_bus_exit(ubus bus)
+void ubus_bus_exit(ubus bus_obj)
 {
-    ubus_bus_t *bus_obj = (ubus_bus_t *)bus;
     void *ret;
 
     LOG_DBG("signal thread to stop\n");
@@ -1085,9 +1084,8 @@ void ubus_bus_exit(ubus bus)
 }
 
 // create and delete master-side pipe
-ubus_mpipe ubus_master_pipe_new(ubus bus, packet_sig_t request_sig, packet_sig_t reply_sig)
+ubus_mpipe ubus_master_pipe_new(ubus bus_obj, packet_sig_t request_sig, packet_sig_t reply_sig)
 {
-    ubus_bus_t *bus_obj = (ubus_bus_t *)bus;
     int i;
 
     for(i=0; i<MAX_MPIPES; ++i) {
@@ -1112,10 +1110,9 @@ ubus_mpipe ubus_master_pipe_new(ubus bus, packet_sig_t request_sig, packet_sig_t
     return NULL;
 }
 
-void ubus_master_pipe_del(ubus_mpipe p)
+void ubus_master_pipe_del(ubus_mpipe pipe)
 {
-    ubus_mpipe_t *pipe = (ubus_mpipe_t *)p;
-    ubus_bus_t *bus_obj = (ubus_bus_t *)pipe->bus_obj;
+    ubus_bus_t *bus_obj = pipe->bus_obj;
 
     LOG_DBG("mpipe[%d] is deleted\n", pipe->index);
     pthread_mutex_destroy(&pipe->pipe_lock);
@@ -1123,9 +1120,8 @@ void ubus_master_pipe_del(ubus_mpipe p)
 }
 
 // create and delete slave-side pipe
-ubus_spipe ubus_slave_pipe_new(ubus bus, packet_sig_t request_sig, packet_sig_t reply_sig)
+ubus_spipe ubus_slave_pipe_new(ubus bus_obj, packet_sig_t request_sig, packet_sig_t reply_sig)
 {
-    ubus_bus_t *bus_obj = (ubus_bus_t *)bus;
     int i;
 
     for(i=0; i<MAX_SPIPES; ++i) {
@@ -1150,10 +1146,9 @@ ubus_spipe ubus_slave_pipe_new(ubus bus, packet_sig_t request_sig, packet_sig_t 
     return NULL;
 }
 
-void ubus_slave_pipe_del(ubus_spipe p)
+void ubus_slave_pipe_del(ubus_spipe pipe)
 {
-    ubus_spipe_t *pipe = (ubus_spipe_t *)p;
-    ubus_bus_t *bus_obj = (ubus_bus_t *)pipe->bus_obj;
+    ubus_bus_t *bus_obj = pipe->bus_obj;
 
     LOG_DBG("spipe[%d] is deleted\n", pipe->index);
     pthread_cond_destroy(&pipe->request_cond);
@@ -1163,10 +1158,9 @@ void ubus_slave_pipe_del(ubus_spipe p)
 
 
 // Master side: send request and wait for reply
-int ubus_master_send_recv(ubus_mpipe p, const ubus_request_t *request, ubus_reply_t *reply)
+int ubus_master_send_recv(ubus_mpipe pipe, const ubus_request_t *request, ubus_reply_t *reply)
 {
-    ubus_mpipe_t *pipe = (ubus_mpipe_t *)p;
-    ubus_bus_t *bus_obj = (ubus_bus_t *)pipe->bus_obj;
+    ubus_bus_t *bus_obj = pipe->bus_obj;
     int max_try = REQUEST_RETRY_TIMES;
     int result = 0;
 
@@ -1225,10 +1219,9 @@ int ubus_master_send_recv(ubus_mpipe p, const ubus_request_t *request, ubus_repl
 }
 
 // Slave side: receive request, process request and send reply
-int ubus_slave_recv(ubus_spipe p, ubus_request_t *request, int timeout_sec)
+int ubus_slave_recv(ubus_spipe pipe, ubus_request_t *request, int timeout_sec)
 {
-    ubus_spipe_t *pipe = (ubus_spipe_t *)p;
-    ubus_bus_t *bus_obj = (ubus_bus_t *)pipe->bus_obj;
+    ubus_bus_t *bus_obj = pipe->bus_obj;
     int result = 0;
     struct timeval tv;
     struct timespec ts;
@@ -1268,10 +1261,9 @@ done:
     return result;
 }
 
-int ubus_slave_send(ubus_spipe p, const ubus_reply_t *reply)
+int ubus_slave_send(ubus_spipe pipe, const ubus_reply_t *reply)
 {
-    ubus_spipe_t *pipe = (ubus_spipe_t *)p;
-    ubus_bus_t *bus_obj = (ubus_bus_t *)pipe->bus_obj;
+    ubus_bus_t *bus_obj = pipe->bus_obj;
     int result = 0;
 
     pthread_mutex_lock(&pipe->pipe_lock);
@@ -1290,10 +1282,8 @@ done:
 // ------------------------------------------------
 // Test routines
 
-int ubus_test_enable(ubus bus, ubus_test_id test_id)
+int ubus_test_enable(ubus bus_obj, ubus_test_id test_id)
 {
-    ubus_bus_t *bus_obj = (ubus_bus_t *)bus;
-
     if(test_id>=UBUS_TEST_ID_MAX) return -EINVAL;
 
     bus_obj->test.test_items[test_id].enabled = true;
@@ -1301,10 +1291,9 @@ int ubus_test_enable(ubus bus, ubus_test_id test_id)
     return 0;
 }
 
-int ubus_test_disable(ubus bus, ubus_test_id test_id)
+int ubus_test_disable(ubus bus_obj, ubus_test_id test_id)
 {
     int i;
-    ubus_bus_t *bus_obj = (ubus_bus_t *)bus;
 
     if(test_id>=UBUS_TEST_ID_MAX) return -EINVAL;
     bus_obj->test.test_items[test_id].enabled = false;
@@ -1319,10 +1308,8 @@ int ubus_test_disable(ubus bus, ubus_test_id test_id)
     return 0;
 }
 
-int ubus_test_set_fail_rate(ubus bus, int fail_percentage)
+int ubus_test_set_fail_rate(ubus bus_obj, int fail_percentage)
 {
-    ubus_bus_t *bus_obj = (ubus_bus_t *)bus;
-
     if(fail_percentage<0 || fail_percentage>100) {
         return -EINVAL;     
     }
@@ -1330,9 +1317,8 @@ int ubus_test_set_fail_rate(ubus bus, int fail_percentage)
     return 0;
 }
 
-int ubus_test_report(ubus bus)
+int ubus_test_report(ubus bus_obj)
 {
-    ubus_bus_t *bus_obj = (ubus_bus_t *)bus;
     int i;
     unsigned long total_fail_packets = 0;
 

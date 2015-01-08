@@ -38,9 +38,9 @@
 extern "C" {
 #endif
 
-typedef void * ubus; 
-typedef void * ubus_mpipe; // master pipe
-typedef void * ubus_spipe; // slave pipe
+typedef struct ubus_bus_t * ubus; 
+typedef struct ubus_mpipe_t * ubus_mpipe; // master pipe
+typedef struct ubus_spipe_t * ubus_spipe; // slave pipe
 
 typedef struct _ubus_cmd_t
 {
