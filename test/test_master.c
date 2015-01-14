@@ -30,8 +30,8 @@ int main(int argc, char **argv)
     unsigned long runs = 0;
     int fail_rate = 2;
 
-    if(argc<2) {
-        fprintf(stderr, "usage: %s /dev/ttyUSB0\n", argv[0]);
+    if(argc<2 || strcmp(argv[1], "-h")==0) {
+        fprintf(stderr, "usage: %s /dev/ttyUSB0 runs fail-rate\n", argv[0]);
         exit(1);
     }
     tty = argv[1];

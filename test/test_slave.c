@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <string.h>
+#include <assert.h>
 
 #include "ubus.h"
 
@@ -10,15 +12,30 @@ int main(int argc, char **argv)
     char *tty;
     ubus bus;
     ubus_spipe pipe;
+    int fail_rate = 2;
 
-    if(argc<2) {
-        fprintf(stderr, "usage: %s /dev/ttyUSB0\n", argv[0]);
+    if(argc<2 || strcmp(argv[1], "-h")==0) {
+        fprintf(stderr, "usage: %s /dev/ttyUSB0 [fail-rate]\n", argv[0]);
         exit(1);
     }
     tty = argv[1];
 
+    if(argc>2) fail_rate = atoi(argv[2]);
+    fprintf(stderr, "Target fail rate %d\n", fail_rate);
+
     ret = ubus_bus_init(&bus, tty, 115200);
     if(ret) exit(1);
+
+    ret = ubus_test_set_fail_rate(bus, fail_rate);
+    assert(ret>=0);
+    ret = ubus_test_enable(bus, UBUS_TEST_MISSING_BYTES);
+    assert(ret>=0);
+    ret = ubus_test_enable(bus, UBUS_TEST_PACKET_LOSS);
+    assert(ret>=0);
+    ret = ubus_test_enable(bus, UBUS_TEST_CORRUPTION);
+    assert(ret>=0);
+    ret = ubus_test_enable(bus, UBUS_TEST_GARBAGE);
+    assert(ret>=0);
 
     pipe = ubus_slave_pipe_new(bus, FAC_2_DM368_REQUEST_SIG, FAC_2_DM368_REPLY_SIG);
     if(NULL==pipe) exit(1);

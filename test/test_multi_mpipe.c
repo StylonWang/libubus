@@ -36,8 +36,7 @@ void generate_request(ubus_request_t *request)
 
 void *thread_routine(void *data)
 {
-    int *pi = (int *)data; // avoid int to void * conversion so compiler won't complain
-    int index = *pi;
+    int index = (int )data; 
     int ret = 0;
 
     fprintf(stderr, "Thread[%d] runs\n", index);
@@ -49,7 +48,7 @@ void *thread_routine(void *data)
         generate_request(&request);
 
         g_runs[index]++;
-        fprintf(stderr, "\nRun[%ld] %x %x %x\n", g_runs[index]-1, request.command, request.data_length, request.data[0]);
+        fprintf(stderr, "\nTh[%d] Run[%ld] %x %x %x\n", index, g_runs[index]-1, request.command, request.data_length, request.data[0]);
         ret = ubus_master_send_recv(g_pipes[index], &request, &reply);
         if(ret<0) {
             fprintf(stderr, "Thread[%d] failed\n", index);
@@ -64,11 +63,38 @@ void *thread_routine(void *data)
                 (reply.state==UBUS_STATE_BUSY)? "busy" : "invalid state",
                 reply.data[0], reply.data_length);
 
+        // check reply state
         if(reply.state!=UBUS_STATE_OK) {
             fprintf(stderr, "Thread[%d] reply failed: %d\n", index, reply.state);
             exit(1); // terminate the whole process if failure
         }
-    }
+
+        // check reply data length, which is supposed to be 1 bytes less than request
+        if(request.data_length>0) {
+            
+            if(reply.data_length!=(request.data_length-1)) {
+                fprintf(stderr, "Thread[%d] reply failed, len mistach: %d/%d \n",
+                        index, reply.data_length, request.data_length-1);
+                exit(1); // terminate the whole process if failure
+            }
+
+            if(0!=memcmp(reply.data, request.data, reply.data_length)) {
+                int i;
+                fprintf(stderr, "Thread[%d] reply failed, data mistach\n", index);
+                fprintf(stderr, "Request is: \n");
+                for(i=0; i<reply.data_length; ++i) {
+                    fprintf(stderr, "%x %s", request.data[i], ((i%8)==7)? "\n" : "");
+                }
+                fprintf(stderr, "\nReply is: \n");
+                for(i=0; i<reply.data_length; ++i) {
+                    fprintf(stderr, "%x %s", reply.data[i], ((i%8)==7)? "\n" : "");
+                }
+                fprintf(stderr, "\n");
+                exit(1); // terminate the whole process if failure
+            }
+        } // end of if(request.data_length>0)
+
+    } // end of while loop
 
     fprintf(stderr, "Thread[%d] exits\n", index);
     return NULL;
@@ -76,7 +102,11 @@ void *thread_routine(void *data)
 
 void signal_handler(int signo)
 {
+    static int counter;
+
+    fprintf(stderr, "Got signal %d\n", signo);
     g_should_stop = true;
+    if(++counter>3) exit(0);
 }
 
 int main(int argc, char **argv)
@@ -87,8 +117,8 @@ int main(int argc, char **argv)
     int i;
     ubus_mpipe pipe;
 
-    if(argc<2) {
-        fprintf(stderr, "usage: %s /dev/ttyUSB0\n", argv[0]);
+    if(argc<2 || strcmp(argv[1], "-h")==0 ) {
+        fprintf(stderr, "usage: %s /dev/ttyUSB0 [runs] [fail-rate]\n", argv[0]);
         exit(1);
     }
     tty = argv[1];
@@ -138,15 +168,12 @@ int main(int argc, char **argv)
 
     // create all threads
     for(i=0; i<MAX_TEST_PIPES; ++i) {
-        ret = pthread_create(&g_threads[i], NULL, thread_routine, (void *)&i);
+        ret = pthread_create(&g_threads[i], NULL, thread_routine, 
+                            (void *)(unsigned long)i); // cast to ulong to avoid compiler warnings
         if(ret<0) {
             fprintf(stderr, "Failed to create thread[%d]: %s\n", i, strerror(errno));
             exit(1);
         }
-    }
-
-    while(!g_should_stop) {
-        sleep(5);
     }
 
     // wait for all threads to stop
@@ -156,6 +183,8 @@ int main(int argc, char **argv)
         ubus_master_pipe_del(g_pipes[i]);
         fprintf(stderr, "Thread[%d] cleared, performed %ld runs\n", i, g_runs[i]);
     }
+
+    fprintf(stderr, "All threads stopped...\n");
 
     ubus_test_report(g_bus);
     ubus_bus_exit(g_bus);

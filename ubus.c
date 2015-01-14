@@ -11,6 +11,7 @@
 #include <time.h>
 #include <sys/select.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/uio.h>
 #include <sys/time.h>
 #include <assert.h>
@@ -159,6 +160,7 @@ typedef struct ubus_bus_t
 {
     pthread_mutex_t fd_lock;
     int fd; // file descriptor to RS232 device
+    bool use_fake_uart;
     //unsigned long sequence; // transport sequence
     //unsigned long last_received_sequence;
     struct termios oldtio;
@@ -197,20 +199,21 @@ enum {
 };
 
 // debug log
-#define LOG_ERR(fmt, args...) do { fprintf(stderr, "[%s:%d]"fmt, __FUNCTION__, __LINE__,##args); } while(0)
-#define LOG_DBG(fmt, args...) do { fprintf(stderr, "[%s:%d]"fmt, __FUNCTION__, __LINE__, ##args); } while(0)
+#define LOG_ERR(fmt, args...) do { fprintf(stderr, "[%d][%s:%d]"fmt, (int)pthread_self()%100, __FUNCTION__, __LINE__,##args); } while(0)
+#define LOG_DBG(fmt, args...) do { fprintf(stderr, "[%d][%s:%d]"fmt, (int)pthread_self()%100, __FUNCTION__, __LINE__, ##args); } while(0)
 
 #define LOG_ERR_S(fmt, args...) do { fprintf(stderr, fmt, ##args); } while(0)
 #define LOG_DBG_S(fmt, args...) do { fprintf(stderr, fmt, ##args); } while(0)
 //--------------------------------------------------------------
 // Internal routines
 
-#ifdef TEST_MODE
-static int ubus_uart_init(char *uart_device, int baud_rate)
+static int ubus_fake_uart_init(char *fake_uart_device)
 {
+    int fd = -1;
     //TODO
+    return fd;
 }
-#else // TEST_MODE
+
 static int ubus_uart_init(char *uart_device, int baud_rate, struct termios *oldtio)
 {
     struct termios newtio;
@@ -285,7 +288,6 @@ static int ubus_uart_init(char *uart_device, int baud_rate, struct termios *oldt
 
     return fd;
 }
-#endif // TEST_MODE
 
 static unsigned int crc32_tab[] = {
 	0x00000000, 0x77073096, 0xee0e612c, 0x990951ba, 0x076dc419, 0x706af48f,
@@ -393,7 +395,7 @@ static int ubus_check_request_crc(const UART_REQUEST *request)
 
 static int ubus_mpipe_recv_reply(ubus_mpipe_t *pipe, const UART_REPLY *reply)
 {
-    LOG_DBG("Reply, sig=0x%x:0x%x:0x%x cmd=0x%x state=0x%x len=%d\n",
+    LOG_DBG("Reply, sig=%x:%x:%x cmd=0x%x state=0x%x len=%d\n",
             reply->RPL[0], reply->RPL[1], reply->STOP_BYTE,
             reply->COMMAND, reply->STATE, reply->LENGTH);
 
@@ -408,7 +410,8 @@ static int ubus_mpipe_recv_reply(ubus_mpipe_t *pipe, const UART_REPLY *reply)
         memcpy(&pipe->reply, reply, sizeof(*reply));
 
         if(reply->SEQUENCE<=pipe->last_reply_sequence) {
-            LOG_ERR("WARNING: sequence jump backwards!\n");
+            LOG_ERR("WARNING: sequence jump backwards (%d/%d)!\n",
+                    reply->SEQUENCE, pipe->last_reply_sequence);
         }
         pipe->last_reply_sequence = reply->SEQUENCE;
         pipe->reply_received = true;
@@ -426,9 +429,9 @@ static int ubus_mpipe_recv_reply(ubus_mpipe_t *pipe, const UART_REPLY *reply)
 
 static int ubus_spipe_recv_request(ubus_spipe_t *pipe, const UART_REQUEST *request)
 {
-    LOG_DBG("Request, sig=0x%x:0x%x:0x%x cmd=0x%x len=%d\n",
+    LOG_DBG("Request, sig=%x:%x:%x cmd=0x%x len=%d seq=%d\n",
             request->REQ[0], request->REQ[1], request->STOP_BYTE,
-            request->COMMAND, request->LENGTH);
+            request->COMMAND, request->LENGTH, request->SEQUENCE);
 
     if(ubus_check_request_crc(request)<0) {
         LOG_ERR("request crc error\n");
@@ -441,7 +444,10 @@ static int ubus_spipe_recv_request(ubus_spipe_t *pipe, const UART_REQUEST *reque
     memcpy(&pipe->request, request, sizeof(*request));
     pipe->request_received = true;
     if(request->SEQUENCE<=pipe->last_request_sequence) {
-        LOG_ERR("WARNING: sequence jump backwards!\n");
+        LOG_ERR("WARNING: sequence jump backwards (%d/%d)!\n",
+                request->SEQUENCE,
+                pipe->last_request_sequence
+                );
     }
     pipe->last_request_sequence = request->SEQUENCE;
     pthread_cond_signal(&pipe->request_cond);
@@ -631,8 +637,8 @@ static int ubus_mpipe_generate_request(ubus_bus_t *bus_obj, ubus_mpipe_t *pipe,
     raw->CHECKSUM[2] = (checksum>>16) & 0xFF;
     raw->CHECKSUM[3] = (checksum>>24) & 0xFF;
 
-    LOG_DBG("REQ %x:%x cmd %x seq %x frag %x data[0] %x len %x sum %x\n",
-            raw->REQ[0], raw->REQ[1], raw->COMMAND, raw->SEQUENCE, raw->FRAGMENT,
+    LOG_DBG("REQ %x:%x:%x cmd %x seq %x frag %x data[0] %x len %d sum %x\n",
+            raw->REQ[0], raw->REQ[1], raw->STOP_BYTE, raw->COMMAND, raw->SEQUENCE, raw->FRAGMENT,
             raw->PAYLOAD[0], raw->LENGTH, checksum);
 
     return 0;
@@ -694,8 +700,8 @@ static int ubus_spipe_generate_reply(ubus_bus_t *bus_obj, ubus_spipe_t *pipe,
     raw->CHECKSUM[2] = (checksum>>16) & 0xFF;
     raw->CHECKSUM[3] = (checksum>>24) & 0xFF;
 
-    LOG_DBG("RPL %x:%x cmd %x state %x seq %x frag %x data[0] %x len %x sum %x\n",
-            raw->RPL[0], raw->RPL[1], raw->COMMAND, raw->STATE, raw->SEQUENCE,
+    LOG_DBG("RPL %x:%x:%x cmd %x state %x seq %x frag %x data[0] %x len %d sum %x\n",
+            raw->RPL[0], raw->RPL[1], raw->STOP_BYTE, raw->COMMAND, raw->STATE, raw->SEQUENCE,
             raw->FRAGMENT, raw->PAYLOAD[0], raw->LENGTH, checksum);
     return 0;
 }
@@ -986,6 +992,8 @@ int ubus_bus_init(ubus *pbus, char *uart_device, int baud_rate)
     struct termios oldtio;
     int fd;
     int ret;
+    const char *test_file = "test";
+    bool use_fake_uart = false;
 
     if(ubus_internal_check()<0) {
         return -1;
@@ -993,7 +1001,14 @@ int ubus_bus_init(ubus *pbus, char *uart_device, int baud_rate)
 
     srand(time(NULL));
 
-    fd = ubus_uart_init(uart_device, baud_rate, &oldtio);
+    if( strncmp(uart_device, test_file, strlen(test_file))==0) {
+        fd = ubus_fake_uart_init(uart_device);
+        use_fake_uart = true;
+    }
+    else {
+        fd = ubus_uart_init(uart_device, baud_rate, &oldtio);
+    }
+
     if(fd<0) {
         return -1;
     }
@@ -1007,6 +1022,7 @@ int ubus_bus_init(ubus *pbus, char *uart_device, int baud_rate)
     bus_obj->fd = fd;
     //bus_obj->sequence = 1;
     bus_obj->oldtio = oldtio;
+    bus_obj->use_fake_uart = use_fake_uart;
 
     ret = pthread_mutex_init(&bus_obj->fd_lock, NULL);
     if(ret) {
@@ -1078,8 +1094,12 @@ void ubus_bus_exit(ubus bus_obj)
     pthread_mutex_destroy(&bus_obj->thread_lock);
 
     // restore TTY settings
-    tcsetattr(bus_obj->fd, TCSANOW, &bus_obj->oldtio);
+    if(!bus_obj->use_fake_uart) {
+        tcsetattr(bus_obj->fd, TCSANOW, &bus_obj->oldtio);
+    }
+
     close(bus_obj->fd);
+
     free(bus_obj);
 }
 
@@ -1207,7 +1227,7 @@ int ubus_master_send_recv(ubus_mpipe pipe, const ubus_request_t *request, ubus_r
             break;
         }
         else {
-            LOG_ERR("timeout waiting for reply\n");
+            LOG_ERR("timeout waiting for reply: %d\n", max_try);
             continue; //keep trying
         }
     } // end of while loop
