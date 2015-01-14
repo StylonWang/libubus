@@ -128,7 +128,6 @@ int main(int argc, char **argv)
     if(argc>3) fail_rate = atoi(argv[3]);
     fprintf(stderr, "Target fail rate %d\n", fail_rate);
 
-    srand(time(NULL));
     signal(SIGINT, signal_handler);
 
     ret = ubus_bus_init(&g_bus, tty, 115200);
