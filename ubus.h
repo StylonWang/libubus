@@ -45,7 +45,7 @@ typedef struct ubus_spipe_t * ubus_spipe; // slave pipe
 typedef struct _ubus_cmd_t
 {
     uint8_t     command;
-    uint8_t     data[255];
+    uint8_t     data[17];
     int         data_length;
 } ubus_request_t;
 
@@ -60,7 +60,7 @@ typedef struct _ubus_reply_t
 {
     uint8_t     command;
     ubus_reply_state state;
-    uint8_t     data[255];
+    uint8_t     data[16];
     int         data_length;
 } ubus_reply_t;
 
