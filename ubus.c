@@ -556,7 +556,11 @@ static void *ubus_thread_routine(void *data)
         // have data, process it
         read_bytes = read(bus_obj->fd, &u, sizeof(u));
 
-        if(bus_obj->data_length+read_bytes > sizeof(bus_obj->data_queue)) {
+        if(read_bytes<0) {
+            LOG_ERR("read error: %s\n", strerror(errno));
+            //TODO: recover from read error?
+        }
+        else if( read_bytes >= 0 && bus_obj->data_length+read_bytes > sizeof(bus_obj->data_queue)) {
             LOG_ERR("queue overflow\n");
         }
         else if(read_bytes>0) {
@@ -1270,7 +1274,7 @@ int ubus_slave_recv(ubus_spipe pipe, ubus_request_t *request, int timeout_sec)
     }
     else {
         result = -EAGAIN;
-        LOG_DBG("no request for now\n");
+        //LOG_DBG("no request for now\n");
     }
 
 done:

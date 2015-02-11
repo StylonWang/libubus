@@ -21,6 +21,9 @@
 // (we call "pipes")using the same UART connection. To acheive this, 
 // each logical components must identify the other using sender_id and reciever_id.
 //
+// The sender/receiver signature (id) also serves as packet delimiter so we can detect
+// packet boundaries much easier.
+//
 //
 // Deliverables:
 // 1. test code: sender and receiver

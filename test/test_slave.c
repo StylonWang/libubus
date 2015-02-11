@@ -45,7 +45,7 @@ int main(int argc, char **argv)
         ubus_request_t request;
         ubus_reply_t reply;
 
-        fprintf(stderr, "Waiting for requests....\n");
+        //fprintf(stderr, "Waiting for requests....\n");
         ret = ubus_slave_recv(pipe, &request, 3);
         if(ret<0 && -EAGAIN==ret) {
             continue;
